@@ -118,7 +118,12 @@ def _resource_limits(memory_mb: int = 512):  # pragma: no cover - child only
 class LocalToolchainBackend:
     name = "local_toolchain"
 
-    def __init__(self, *, timeout: float = DEFAULT_TIMEOUT, memory_mb: int = 512):
+    # 1024, not 512: node/V8 isolate init commits >512MB against RLIMIT_DATA on
+    # linux/amd64 and dies (v8::Isolate::Initialize trap, or a silent kill when
+    # near-limit GC thrash hits the CPU/wall caps). 512 was an intermittent CI
+    # failure at the edge; 1GB leaves headroom while CPU/FSIZE/timeout still cap
+    # runaway programs. The hard memory boundary remains ContainerPolicy.memory.
+    def __init__(self, *, timeout: float = DEFAULT_TIMEOUT, memory_mb: int = 1024):
         self.timeout = float(timeout)
         self.memory_mb = int(memory_mb)
 

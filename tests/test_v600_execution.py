@@ -40,7 +40,7 @@ class LocalExecutionTests(unittest.TestCase):
     @unittest.skipUnless(_have("javascript"), "node not installed")
     def test_javascript_runs(self):
         r = run_exercise("javascript", "console.log(6*7)", expect_stdout="42", backend=LocalToolchainBackend())
-        self.assertTrue(r["passed"], msg=r.get("stderr"))
+        self.assertTrue(r["passed"], msg=r)  # full result: stderr alone hides timed_out/returncode
 
     @unittest.skipUnless(_have("go"), "go not installed")
     def test_go_runs(self):
