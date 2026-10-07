@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StudyIntent",
+  "type": "string",
+  "enum": [
+    "quick_reference",
+    "compress_source",
+    "build_plan",
+    "learn_concept",
+    "decompose_task",
+    "build_with_help",
+    "critique_artifact",
+    "interpret_question",
+    "simulate_performance",
+    "practice_retrieval",
+    "deliver_artifact"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SimulationEvidence",
+  "type": "object",
+  "required": [
+    "fidelity",
+    "requested_scope",
+    "normalized_scope"
+  ],
+  "properties": {
+    "fidelity": {
+      "type": "object",
+      "properties": {
+        "cognitive": {
+          "type": "string"
+        },
+        "social": {
+          "type": "string"
+        },
+        "physical": {
+          "type": "string"
+        },
+        "temporal": {
+          "type": "string"
+        },
+        "authentic_environment": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "requested_scope": {
+      "type": "string"
+    },
+    "normalized_scope": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,177 @@
+{
+  "id": "language-learning",
+  "match": {
+    "priority": 40,
+    "keywords": [
+      "english",
+      "language learning",
+      "grammar",
+      "vocabulary",
+      "pronunciation",
+      "speaking",
+      "listening",
+      "writing",
+      "reading",
+      "ingilis",
+      "dil öyrən"
+    ]
+  },
+  "epistemics": {
+    "truth_modes": [
+      "usage_evidence",
+      "reference_grammar",
+      "authentic_language_samples"
+    ],
+    "freshness": "moderate",
+    "feedback_latency": "mixed",
+    "ambiguity": "medium"
+  },
+  "risk": {
+    "level": "low_by_default",
+    "rule": "raise_for_high_stakes_certification_or_professional_interpretation"
+  },
+  "evidence": {
+    "preferred": [
+      "free_recall",
+      "spontaneous_speaking",
+      "listening_comprehension",
+      "writing_artifact",
+      "authentic_dialogue_transfer"
+    ]
+  },
+  "sources": {
+    "priority": [
+      "reputable_reference_grammar",
+      "dictionary_corpus",
+      "authentic_speech",
+      "teacher_curated_material"
+    ]
+  },
+  "tools": [
+    "speech_to_text",
+    "text_to_speech",
+    "audio_playback",
+    "dialogue_simulator"
+  ],
+  "competence_graph": {
+    "nodes": [
+      {
+        "id": "grammar_accuracy",
+        "kind": "knowledge_application"
+      },
+      {
+        "id": "vocabulary_retrieval",
+        "kind": "retrieval"
+      },
+      {
+        "id": "listening_comprehension",
+        "kind": "perception"
+      },
+      {
+        "id": "spontaneous_speaking",
+        "kind": "production"
+      },
+      {
+        "id": "pronunciation",
+        "kind": "production"
+      },
+      {
+        "id": "reading_comprehension",
+        "kind": "comprehension"
+      },
+      {
+        "id": "writing",
+        "kind": "production"
+      }
+    ],
+    "edges": [],
+    "goal_profiles": {
+      "travel": [
+        "listening_comprehension",
+        "spontaneous_speaking",
+        "vocabulary_retrieval"
+      ],
+      "academic": [
+        "reading_comprehension",
+        "writing",
+        "vocabulary_retrieval"
+      ],
+      "work": [
+        "spontaneous_speaking",
+        "listening_comprehension",
+        "writing"
+      ]
+    }
+  },
+  "curriculum": {
+    "authority_strategy": "goal_profile_plus_reputable_reference_material",
+    "llm_role": "adapt_practice_not_define_language_truth"
+  },
+  "challenge_gate": {
+    "supported": true,
+    "preferred": "live_or_simulated_performance",
+    "global_pass_forbidden": true
+  },
+  "modalities": {
+    "required": [
+      "text"
+    ],
+    "conditional": [
+      "audio_input",
+      "audio_output"
+    ],
+    "rule": "speaking_and_listening_require_audio_evidence_when available"
+  },
+  "authentic_environment": {
+    "required_for_far_transfer": true,
+    "examples": [
+      "real_human_conversation",
+      "authentic_accent_and_speed"
+    ]
+  },
+  "practice_dimensions": [
+    {
+      "dimension": "skill",
+      "values": [
+        "grammar",
+        "vocabulary",
+        "listening",
+        "speaking",
+        "reading",
+        "writing"
+      ]
+    },
+    {
+      "dimension": "context",
+      "values": [
+        "travel",
+        "work",
+        "academic",
+        "daily"
+      ]
+    },
+    {
+      "dimension": "surface_variation",
+      "values": [
+        "question",
+        "dialogue",
+        "story",
+        "instruction",
+        "argument"
+      ]
+    }
+  ],
+  "governance": {
+    "simulation_fidelity_cap": true,
+    "system_trace": true
+  },
+  "anchor_probe": {
+    "fallback_strategy": "goal_conditioned_runtime_generation",
+    "constraints": [
+      "one task only",
+      "match goal profile",
+      "do not infer global level from one result"
+    ],
+    "candidates": []
+  }
+}

@@ -1,0 +1,185 @@
+{
+  "id": "python-reference",
+  "match": {
+    "priority": 50,
+    "keywords": [
+      "python",
+      "cpython",
+      "pip",
+      "pytest",
+      "asyncio"
+    ]
+  },
+  "epistemics": {
+    "truth_modes": [
+      "official_documentation",
+      "deterministic_execution",
+      "language_semantics"
+    ],
+    "freshness": "version_sensitive",
+    "feedback_latency": "immediate",
+    "ambiguity": "usually_low_for_execution_claims"
+  },
+  "risk": {
+    "level": "low_by_default",
+    "rule": "raise_for_security_or_production_side_effects"
+  },
+  "evidence": {
+    "preferred": [
+      "prediction_before_execution_when_informative",
+      "code_artifact",
+      "deterministic_output",
+      "debugging",
+      "near_transfer",
+      "far_transfer"
+    ]
+  },
+  "sources": {
+    "priority": [
+      "python_official_docs",
+      "pep",
+      "deterministic_runtime_evidence",
+      "trusted_book_or_maintainer"
+    ]
+  },
+  "tools": [
+    "python_ast_parse",
+    "low_risk_isolated_subprocess_verifier"
+  ],
+  "verifier": {
+    "id": "python-low-risk",
+    "config": {
+      "timeout_sec": 2.0,
+      "memory_mb": 256,
+      "max_output_bytes": 64000,
+      "allowed_imports": [
+        "copy",
+        "math",
+        "statistics",
+        "json",
+        "re",
+        "collections",
+        "itertools",
+        "functools"
+      ]
+    }
+  },
+  "anchor_probe": {
+    "fallback_strategy": "goal_conditioned_runtime_generation",
+    "verifier_id": "python-low-risk",
+    "constraints": [
+      "one task only",
+      "high information gain",
+      "30-120 seconds expected effort",
+      "no answer leakage",
+      "prefer executable evidence",
+      "do not infer stable ability from one result"
+    ],
+    "candidates": [
+      {
+        "id": "python-reference-aliasing-anchor",
+        "when_topic_contains": [
+          "reference",
+          "shallow copy",
+          "copy",
+          "alias"
+        ],
+        "prompt": "Predict the final values of a and b and explain why before running the code.",
+        "artifact": {
+          "language": "python",
+          "code": "a = [1, 2, [3, 4]]\nb = a.copy()\nb[2].append(99)\nprint(a)\nprint(b)"
+        },
+        "response_contract": {
+          "requires_prediction": true,
+          "requires_explanation": true,
+          "answer_reveal_before_response": false
+        },
+        "verifier_id": "python-low-risk"
+      }
+    ]
+  },
+  "competence_graph": {
+    "nodes": [
+      {
+        "id": "understand_semantics",
+        "kind": "understand"
+      },
+      {
+        "id": "implement",
+        "kind": "produce"
+      },
+      {
+        "id": "validate",
+        "kind": "validate"
+      },
+      {
+        "id": "debug",
+        "kind": "debug"
+      },
+      {
+        "id": "operate",
+        "kind": "operate"
+      }
+    ],
+    "edges": [
+      {
+        "from": "understand_semantics",
+        "to": "implement"
+      },
+      {
+        "from": "implement",
+        "to": "validate"
+      },
+      {
+        "from": "validate",
+        "to": "debug"
+      }
+    ]
+  },
+  "curriculum": {
+    "authority_strategy": "official_docs_peps_then_dependency_graph",
+    "llm_role": "adapt_not_invent"
+  },
+  "challenge_gate": {
+    "supported": true,
+    "preferred": "verified_authentic_task",
+    "global_pass_forbidden": true
+  },
+  "modalities": {
+    "required": [
+      "text",
+      "code"
+    ],
+    "optional": [
+      "diagram"
+    ]
+  },
+  "authentic_environment": {
+    "required_for_far_transfer": false,
+    "notes": "deterministic runtime can validate many execution claims"
+  },
+  "practice_dimensions": [
+    {
+      "dimension": "surface_form",
+      "values": [
+        "prediction",
+        "debugging",
+        "implementation",
+        "explanation"
+      ]
+    },
+    {
+      "dimension": "context",
+      "values": [
+        "flat_objects",
+        "nested_objects",
+        "functions",
+        "containers"
+      ]
+    }
+  ],
+  "governance": {
+    "untrusted_code": "containerized_executor_required_for_high_risk",
+    "system_trace": true
+  }
+}

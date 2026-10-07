@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewItem",
+  "type": "object",
+  "required": ["capability_id", "representation", "intent", "evidence_target"],
+  "properties": {
+    "capability_id": {"type": "string"},
+    "representation": {"enum": ["qa_card", "debug_task", "prediction_task", "teach_back", "reconstruction_task", "scenario_decision", "free_recall"]},
+    "intent": {"type": "string"},
+    "evidence_target": {"enum": ["near_transfer", "delayed_independent_performance"]},
+    "reasons": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,14 @@
+{"id": "mode-swap", "property": "same user+topic, quick_answer vs learn must route differently", "expected": "quick_answer=>direct; learn=>teach unless deep trigger"}
+{"id": "single-error", "property": "one conceptual error without decision-sensitive ambiguity", "expected": "no automatic level-2 diagnosis"}
+{"id": "support-provenance", "property": "same correct outcome, assisted vs unassisted", "expected": "completion may match; independence evidence differs"}
+{"id": "transfer-distance", "property": "same concept, reproduction vs novel context", "expected": "evidence scopes remain distinct"}
+{"id": "projection-rebuild", "property": "delete learner-evidence projection and rebuild", "expected": "logical state recovered from ledger"}
+{"id": "unknown-domain", "property": "topic has no specialized adapter", "expected": "generic-research adapter; kernel unchanged"}
+{"id": "representation-restraint", "property": "M0-M3 runtime", "expected": "no HTML/browser artifact generation"}
+{"id": "high-stakes", "property": "same learning goal but high_stakes=true", "expected": "policy selects verify_then_explain rather than preserving struggle"}
+{"id": "beginner-example-first", "property": "same beginner request with LLM, SQL, and language-learning topics", "expected": "familiar concrete example before terminology; one plain-language concept and one small actionable task; no domain-specific hard-coded teaching exception"}
+{"id": "unclear-explanation-adaptation", "property": "learner says I do not understand after an explanation, with no graded answer", "expected": "change example or representation and narrow the task; no repetition with extra jargon, no misconception diagnosis or mastery evidence from the complaint"}
+{"id": "example-before-probe-support", "property": "same task after a worked example versus a cold attempt", "expected": "worked example is recorded as pedagogical support; subsequent success is not represented as cold or unassisted capability evidence"}
+{"id": "practice-location-by-task", "property": "same learning workspace with conceptual task versus coding task", "expected": "lesson and instructions in React; conceptual response may be chat or notes; coding implementation in IDE submission folder; no mandatory coding for every first lesson"}
+{"id": "roadmap-before-lesson", "property": "first learning start or page reload for any topic", "expected": "visual prerequisite roadmap is shown first; no auto-open lesson; node selection opens lesson/task and back returns to the roadmap; connectors follow actual curriculum prerequisites"}
+{"id": "roadmap-scope-versus-first-lesson", "property": "broad sustained goal for LLMs or another domain, with a novice starting lesson", "expected": "source-grounded map covers the agreed goal and meaningful application branches, while the first lesson remains small; no fixed six-node truncation, filler-node inflation, unsupported topic coverage, or hidden coding prerequisites"}

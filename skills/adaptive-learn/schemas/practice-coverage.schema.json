@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PracticeCoverage",
+  "type": "object",
+  "required": [
+    "capability_id",
+    "cells"
+  ],
+  "properties": {
+    "capability_id": {
+      "type": "string"
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "dimension",
+          "value",
+          "attempts",
+          "independent_successes"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "independent_successes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

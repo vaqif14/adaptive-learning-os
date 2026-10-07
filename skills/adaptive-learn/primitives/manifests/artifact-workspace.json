@@ -1,0 +1,12 @@
+{
+  "primitive_id": "artifact_workspace",
+  "version": "1",
+  "renderer_available": false,
+  "lifecycle_status": "contract_only_m4",
+  "supported_events": ["artifact_created", "artifact_revised", "artifact_validated"],
+  "parameters": {
+    "artifact_type": "string",
+    "verifier_id": "string|null",
+    "rubric_id": "string|null"
+  }
+}

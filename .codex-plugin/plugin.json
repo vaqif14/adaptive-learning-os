@@ -1,0 +1,16 @@
+{
+  "name": "adaptive-learning-os",
+  "version": "0.6.0",
+  "description": "Evidence-first adaptive learning runtime with adaptive source orchestration, protected cognition, domain-sensitive adapters, challenge/performance evidence, source governance, deterministic verification, and auditable policy decisions.",
+  "author": {
+    "name": "Adaptive Learning OS"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Adaptive Learning OS",
+    "shortDescription": "Evidence-first adaptive learning",
+    "longDescription": "A CLI-first adaptive learning runtime for Codex with Study Intent routing, append-only evidence, protected learner cognition, domain-sensitive adapters, challenge gates, performance evidence, source governance, deterministic validation, accessibility semantics, simulation-fidelity limits, and auditable system policy. Browser primitives remain contract-only.",
+    "developerName": "Adaptive Learning OS",
+    "category": "Education"
+  }
+}

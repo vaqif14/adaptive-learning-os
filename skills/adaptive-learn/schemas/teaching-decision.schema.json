@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TeachingDecision",
+  "type": "object",
+  "required": [
+    "route",
+    "mode",
+    "move",
+    "reasons",
+    "diagnostic_level"
+  ],
+  "properties": {
+    "route": {
+      "enum": [
+        "direct",
+        "teach",
+        "deep"
+      ]
+    },
+    "mode": {
+      "type": "string"
+    },
+    "move": {
+      "type": "string"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "diagnostic_level": {
+      "enum": [
+        0,
+        1,
+        2
+      ]
+    }
+  }
+}

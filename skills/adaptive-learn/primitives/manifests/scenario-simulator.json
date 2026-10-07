@@ -1,0 +1,21 @@
+{
+  "primitive_id": "scenario_simulator",
+  "version": "1",
+  "lifecycle_status": "contract_only_m4",
+  "renderer_available": false,
+  "description": "Declarative contract for oral exams, interviews, debates, sales calls, presentations, and other role-based performance simulations. No browser renderer is shipped in M0-M3.",
+  "parameters": {
+    "role": {"type": "string"},
+    "objective": {"type": "string"},
+    "turn_policy": {"enum": ["single_question_at_a_time", "free_dialogue", "timed_rounds"]},
+    "time_pressure_sec": {"type": ["integer", "null"], "minimum": 1},
+    "evaluation_contract": {"type": "object"}
+  },
+  "supported_events": [
+    "scenario_started",
+    "prompt_presented",
+    "learner_response_committed",
+    "feedback_recorded",
+    "scenario_completed"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIUsePolicy",
+  "type": "object",
+  "properties": {
+    "ai_allowed": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "allowed_operations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "prohibited_operations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "disclosure_required": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "citation_required": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "confidentiality_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

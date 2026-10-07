@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrimitiveManifest",
+  "type": "object",
+  "required": ["primitive_id", "version", "lifecycle_status", "renderer_available", "parameters", "supported_events"],
+  "properties": {
+    "primitive_id": {"type": "string"},
+    "version": {"type": "string"},
+    "lifecycle_status": {"type": "string"},
+    "renderer_available": {"type": "boolean"},
+    "description": {"type": "string"},
+    "parameters": {"type": "object"},
+    "supported_events": {"type": "array", "items": {"type": "string"}}
+  }
+}

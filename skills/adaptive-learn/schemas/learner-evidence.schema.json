@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LearnerEvidenceProjection",
+  "type": "object",
+  "required": [
+    "session_id",
+    "demonstrated_capabilities",
+    "uncertainties",
+    "active_hypotheses"
+  ],
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "demonstrated_capabilities": {
+      "type": "object"
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "active_hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "last_rebuilt_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

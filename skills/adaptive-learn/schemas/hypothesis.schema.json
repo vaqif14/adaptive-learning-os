@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DiagnosticHypothesis",
+  "type": "object",
+  "required": [
+    "hypothesis_id",
+    "explanation",
+    "status",
+    "predicted_observation",
+    "probe_action",
+    "decision_impact"
+  ],
+  "properties": {
+    "hypothesis_id": {
+      "type": "string"
+    },
+    "explanation": {
+      "type": "string"
+    },
+    "status": {
+      "const": "tentative"
+    },
+    "predicted_observation": {
+      "type": "string"
+    },
+    "probe_action": {
+      "type": "string"
+    },
+    "decision_impact": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    }
+  }
+}

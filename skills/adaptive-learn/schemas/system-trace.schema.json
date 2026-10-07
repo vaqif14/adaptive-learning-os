@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SystemTrace",
+  "type": "object",
+  "required": [
+    "trace_id",
+    "route"
+  ],
+  "properties": {
+    "trace_id": {
+      "type": "string"
+    },
+    "route": {
+      "type": "string"
+    },
+    "pedagogical_intent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model_calls": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tools_called": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "input_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "output_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "latency_ms": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "verifier_result": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_move": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "failure": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fallback": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

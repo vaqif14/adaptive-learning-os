@@ -1,0 +1,85 @@
+{
+  "id": "generic-research",
+  "match": {
+    "priority": 0,
+    "keywords": []
+  },
+  "epistemics": {
+    "truth_modes": [
+      "source_comparison",
+      "empirical_observation",
+      "reasoned_argument"
+    ],
+    "freshness": "infer_at_runtime",
+    "feedback_latency": "unknown",
+    "ambiguity": "unknown"
+  },
+  "risk": {
+    "level": "unknown",
+    "rule": "preserve_uncertainty_and_escalate_source_requirements_when_stakes_are_high"
+  },
+  "evidence": {
+    "preferred": [
+      "explicit_explanation",
+      "artifact",
+      "source_grounded_reasoning",
+      "transfer_task"
+    ]
+  },
+  "sources": {
+    "priority": [
+      "domain_primary_sources",
+      "official_sources",
+      "systematic_or_peer_reviewed_sources",
+      "expert_practice",
+      "community_as_hypothesis_only"
+    ]
+  },
+  "tools": [
+    "web_research_when_freshness_or_public_facts_matter"
+  ],
+  "anchor_probe": {
+    "fallback_strategy": "goal_conditioned_runtime_generation",
+    "constraints": [
+      "one task only",
+      "high information gain",
+      "30-120 seconds expected effort",
+      "no answer leakage",
+      "prefer authentic evidence",
+      "do not infer stable ability from one result"
+    ],
+    "candidates": []
+  },
+  "competence_graph": {
+    "nodes": [],
+    "edges": [],
+    "runtime_policy": "discover_from_authoritative_sources_or_triangulated_research"
+  },
+  "curriculum": {
+    "authority_strategy": "research_triangulate_then_propose",
+    "llm_role": "adapter_not_authority"
+  },
+  "challenge_gate": {
+    "supported": true,
+    "preferred": "authentic_task_with_explicit_rubric",
+    "global_pass_forbidden": true
+  },
+  "modalities": {
+    "required": [
+      "text"
+    ],
+    "optional": [
+      "document",
+      "audio",
+      "structured_ui"
+    ]
+  },
+  "authentic_environment": {
+    "required_for_far_transfer": "infer_by_domain"
+  },
+  "practice_dimensions": [],
+  "governance": {
+    "source_rights_gate": true,
+    "system_trace": true
+  }
+}

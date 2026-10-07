@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "adaptive-learning-os",
+  "version": "0.6.0",
+  "description": "Evidence-first adaptive learning runtime with adaptive source orchestration, protected cognition, domain-sensitive adapters, challenge/performance evidence, source governance, deterministic verification, and auditable policy decisions.",
+  "license": "MIT",
+  "keywords": [
+    "adaptive-learning",
+    "education",
+    "codex",
+    "agent-skill",
+    "evidence"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Session",
+  "type": "object",
+  "required": [
+    "session_id",
+    "created_at",
+    "topic",
+    "status"
+  ],
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "topic": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "paused",
+        "closed"
+      ]
+    },
+    "adapter_id": {
+      "type": "string"
+    },
+    "interaction_mode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

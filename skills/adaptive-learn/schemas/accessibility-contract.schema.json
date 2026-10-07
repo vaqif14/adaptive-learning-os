@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AccessibilityContract",
+  "type": "object",
+  "required": [
+    "accommodations"
+  ],
+  "properties": {
+    "accommodations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "learner_requested": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,122 @@
+{
+  "id": "ai-ml-engineering",
+  "match": {
+    "priority": 60,
+    "keywords": [
+      "llm", "large language model", "transformer", "attention", "self-attention",
+      "machine learning", "deep learning", "neural network", "embedding", "tokenizer",
+      "rag", "retrieval augmented", "fine-tuning", "pretraining", "gradient descent",
+      "backpropagation", "pytorch", "tensorflow", "diffusion", "reinforcement learning"
+    ]
+  },
+  "epistemics": {
+    "truth_modes": ["peer_reviewed_papers", "official_framework_docs", "deterministic_execution", "empirical_benchmark"],
+    "freshness": "fast_moving_field_verify_recency",
+    "feedback_latency": "immediate_for_code_delayed_for_training",
+    "ambiguity": "high_for_research_claims_low_for_code"
+  },
+  "risk": {
+    "level": "medium",
+    "rule": "raise_for_unsafe_training_data_pii_or_production_model_deployment"
+  },
+  "evidence": {
+    "preferred": [
+      "prediction_before_execution_when_informative",
+      "code_artifact",
+      "deterministic_output",
+      "reproducible_experiment",
+      "near_transfer",
+      "far_transfer",
+      "delayed_independent_performance"
+    ]
+  },
+  "sources": {
+    "priority": [
+      "primary_research_paper",
+      "official_framework_documentation",
+      "deterministic_runtime_evidence",
+      "reputable_course_or_textbook"
+    ]
+  },
+  "tools": ["python_ast_parse", "low_risk_isolated_subprocess_verifier"],
+  "verifier": {
+    "id": "python-low-risk",
+    "config": {
+      "timeout_sec": 3.0,
+      "memory_mb": 512,
+      "max_output_bytes": 64000,
+      "allowed_imports": ["copy", "math", "statistics", "json", "re", "collections", "itertools", "functools"]
+    }
+  },
+  "anchor_probe": {
+    "fallback_strategy": "goal_conditioned_runtime_generation",
+    "verifier_id": "python-low-risk",
+    "constraints": [
+      "one task only",
+      "high information gain",
+      "60-180 seconds expected effort",
+      "no answer leakage",
+      "prefer executable or derivational evidence",
+      "do not infer stable ability from one result"
+    ],
+    "candidates": [
+      {
+        "id": "ml-attention-anchor",
+        "when_topic_contains": ["attention", "transformer", "self-attention"],
+        "prompt": "Before coding: predict the output shape of scaled dot-product attention for Q,K,V each of shape (seq=3, d=4), and explain why. Then implement the softmax-weighted sum.",
+        "artifact": {
+          "language": "python",
+          "code": "import math\n# Q,K,V: 3x4. Implement attention(Q,K,V) -> 3x4. Predict shape first.\n"
+        },
+        "response_contract": {
+          "requires_prediction": true,
+          "requires_explanation": true,
+          "answer_reveal_before_response": false
+        },
+        "verifier_id": "python-low-risk"
+      }
+    ]
+  },
+  "competence_graph": {
+    "nodes": [
+      {"id": "math_foundations", "kind": "understand"},
+      {"id": "tokenization", "kind": "produce"},
+      {"id": "embeddings", "kind": "produce"},
+      {"id": "attention", "kind": "produce"},
+      {"id": "transformer_block", "kind": "produce"},
+      {"id": "training_loop", "kind": "produce"},
+      {"id": "finetuning", "kind": "produce"},
+      {"id": "rag", "kind": "produce"},
+      {"id": "evaluation", "kind": "validate"}
+    ],
+    "edges": [
+      {"from": "math_foundations", "to": "embeddings"},
+      {"from": "tokenization", "to": "embeddings"},
+      {"from": "embeddings", "to": "attention"},
+      {"from": "attention", "to": "transformer_block"},
+      {"from": "transformer_block", "to": "training_loop"},
+      {"from": "training_loop", "to": "finetuning"},
+      {"from": "transformer_block", "to": "rag"},
+      {"from": "training_loop", "to": "evaluation"}
+    ]
+  },
+  "curriculum": {
+    "authority_strategy": "canonical_papers_and_framework_docs_then_dependency_graph",
+    "llm_role": "adapt_not_invent"
+  },
+  "challenge_gate": {"supported": true, "preferred": "verified_authentic_task", "global_pass_forbidden": true},
+  "modalities": {"required": ["text", "code", "math"], "optional": ["diagram"]},
+  "authentic_environment": {
+    "required_for_far_transfer": true,
+    "notes": "real training/eval on data is required to claim far transfer; toy runtime validates component-level claims only"
+  },
+  "practice_dimensions": [
+    {"dimension": "surface_form", "values": ["derivation", "prediction", "implementation", "debugging", "experiment"]},
+    {"dimension": "context", "values": ["single_head", "multi_head", "batched", "causal_masked"]},
+    {"dimension": "difficulty", "values": ["toy", "realistic", "production"]}
+  ],
+  "governance": {
+    "untrusted_code": "containerized_executor_required_for_high_risk",
+    "system_trace": true
+  }
+}

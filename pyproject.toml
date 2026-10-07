@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-learning-os-runtime"
+version = "0.6.0"
+description = "Adaptive Learning OS runtime with evidence-first pedagogy and adaptive source orchestration"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+alearn = "adaptive_learning_os.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = [
+    "adaptive_learning_os",
+    "alearn_skill",
+    "alearn_skill.runtime",
+    "alearn_skill.runtime.verifiers",
+    "alearn_skill.runtime.adapters",
+    "alearn_skill.scripts",
+]
+
+[tool.setuptools.package-dir]
+alearn_skill = "skills/adaptive-learn"
+
+[tool.setuptools.package-data]
+alearn_skill = ["templates/react/**/*", "templates/react/*", "**/*.json", "**/*.md", "**/*.py", "schemas/*.json", "adapters/manifests/*.json", "primitives/manifests/*.json", "references/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

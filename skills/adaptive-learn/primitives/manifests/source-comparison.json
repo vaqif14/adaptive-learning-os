@@ -1,0 +1,12 @@
+{
+  "primitive_id": "source_comparison",
+  "version": "1",
+  "renderer_available": false,
+  "lifecycle_status": "contract_only_m4",
+  "supported_events": ["claim_selected", "source_opened", "comparison_committed", "revision_committed"],
+  "parameters": {
+    "source_ids": "array",
+    "claim": "string",
+    "rights_checked": "boolean"
+  }
+}

@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test dependencies
+        run: python -m pip install --quiet pytest fastapi httpx
+      - name: Run test suite
+        run: python -m pytest -q
+      - name: Package validation
+        run: python skills/adaptive-learn/scripts/validate_package.py
+      - name: Wheel install smoke
+        run: |
+          python -m pip install --quiet .
+          cd /tmp && alearn --version && alearn languages >/dev/null 2>&1 || alearn --help >/dev/null

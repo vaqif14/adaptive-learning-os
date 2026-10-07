@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourceRecord",
+  "type": "object",
+  "required": [
+    "source_id",
+    "source_type",
+    "rights"
+  ],
+  "properties": {
+    "source_id": {
+      "type": "string"
+    },
+    "uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_type": {
+      "type": "string"
+    },
+    "original_author": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "publisher": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rights": {
+      "type": "object",
+      "required": [
+        "access_status",
+        "rights_status",
+        "permitted_operations"
+      ],
+      "properties": {
+        "jurisdiction": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "access_status": {
+          "type": "string"
+        },
+        "license": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rights_status": {
+          "type": "string"
+        },
+        "permitted_operations": {
+          "type": "object"
+        },
+        "attribution_required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rights_reservation_detected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "requires_human_review": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "material_availability": {
+      "type": "string",
+      "enum": [
+        "learner_available",
+        "runtime_discovered",
+        "acquisition_required",
+        "unknown"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

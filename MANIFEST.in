@@ -1,0 +1,2 @@
+graft skills/adaptive-learn
+global-exclude __pycache__ *.pyc

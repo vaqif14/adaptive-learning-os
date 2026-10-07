@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CognitiveWorkContract",
+  "type": "object",
+  "required": [
+    "target_capability",
+    "protected_cognition",
+    "delegable_work",
+    "independence_required"
+  ],
+  "properties": {
+    "target_capability": {
+      "type": "string"
+    },
+    "protected_cognition": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "delegable_work": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "independence_required": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

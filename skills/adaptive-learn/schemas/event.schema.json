@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LedgerRecord",
+  "type": "object",
+  "required": [
+    "record_id",
+    "session_id",
+    "timestamp",
+    "record_type",
+    "payload",
+    "provenance"
+  ],
+  "properties": {
+    "record_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "record_type": {
+      "enum": [
+        "event",
+        "observation",
+        "evidence",
+        "decision",
+        "hypothesis"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "provenance": {
+      "type": "object"
+    }
+  }
+}

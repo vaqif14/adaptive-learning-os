@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LearningContract",
+  "type": "object",
+  "required": [
+    "goal",
+    "resources",
+    "source_policy"
+  ],
+  "properties": {
+    "goal": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "application_context": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "desired_independence": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "time_horizon": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deadline": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resources": {
+      "type": "object",
+      "required": [
+        "learner_supplied",
+        "canonical"
+      ],
+      "properties": {
+        "learner_supplied": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "canonical": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "stated_background": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_evidence_scope": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "supported_completion",
+        "independent_reproduction",
+        "near_transfer",
+        "far_transfer",
+        "delayed_independent_performance"
+      ]
+    },
+    "goal_mode": {
+      "type": "string",
+      "enum": [
+        "learn",
+        "perform_with_assistance",
+        "deliver_artifact",
+        "quick_reference"
+      ]
+    },
+    "fast_track_requested": {
+      "type": "boolean"
+    },
+    "protected_cognition": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "delegable_work": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "accessibility_needs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "authentic_environment_required": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "ai_use_policy": {
+      "type": "object"
+    },
+    "source_policy": {
+      "type": "object",
+      "required": [
+        "strategy",
+        "use_available_materials",
+        "discover_missing_materials",
+        "recommend_acquisition_for_unresolved",
+        "ask_before_discovery",
+        "require_user_material_each_session"
+      ],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "adaptive_hybrid",
+            "strict_closed_world",
+            "auto_discovery",
+            "curated_acquisition"
+          ]
+        },
+        "use_available_materials": {
+          "type": "boolean"
+        },
+        "discover_missing_materials": {
+          "type": "boolean"
+        },
+        "recommend_acquisition_for_unresolved": {
+          "type": "boolean"
+        },
+        "ask_before_discovery": {
+          "type": "boolean"
+        },
+        "require_user_material_each_session": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

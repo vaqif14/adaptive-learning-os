@@ -1,0 +1,12 @@
+{
+  "primitive_id": "audio_dialogue",
+  "version": "1",
+  "renderer_available": false,
+  "lifecycle_status": "contract_only_m4",
+  "supported_events": ["audio_prompt_presented", "learner_audio_committed", "transcript_generated", "feedback_presented"],
+  "parameters": {
+    "role": "string",
+    "language": "string",
+    "fidelity_profile": "object"
+  }
+}

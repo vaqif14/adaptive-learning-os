@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DomainAdapterManifest",
+  "type": "object",
+  "required": [
+    "id",
+    "match",
+    "epistemics",
+    "risk",
+    "evidence"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "match": {
+      "type": "object"
+    },
+    "epistemics": {
+      "type": "object"
+    },
+    "risk": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "sources": {
+      "type": "object"
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "config": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "anchor_probe": {
+      "type": "object",
+      "properties": {
+        "fallback_strategy": {
+          "type": "string"
+        },
+        "verifier_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "competence_graph": {
+      "type": "object"
+    },
+    "curriculum": {
+      "type": "object"
+    },
+    "challenge_gate": {
+      "type": "object"
+    },
+    "modalities": {
+      "type": "object"
+    },
+    "authentic_environment": {
+      "type": "object"
+    },
+    "governance": {
+      "type": "object"
+    },
+    "practice_dimensions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

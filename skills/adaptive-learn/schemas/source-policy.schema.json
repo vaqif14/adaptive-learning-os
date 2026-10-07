@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourcePolicy",
+  "type": "object",
+  "required": [
+    "strategy",
+    "use_available_materials",
+    "discover_missing_materials",
+    "recommend_acquisition_for_unresolved",
+    "ask_before_discovery",
+    "require_user_material_each_session"
+  ],
+  "properties": {
+    "strategy": {
+      "type": "string",
+      "enum": [
+        "adaptive_hybrid",
+        "strict_closed_world",
+        "auto_discovery",
+        "curated_acquisition"
+      ]
+    },
+    "use_available_materials": {
+      "type": "boolean"
+    },
+    "discover_missing_materials": {
+      "type": "boolean"
+    },
+    "recommend_acquisition_for_unresolved": {
+      "type": "boolean"
+    },
+    "ask_before_discovery": {
+      "type": "boolean"
+    },
+    "require_user_material_each_session": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

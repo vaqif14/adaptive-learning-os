@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evidence",
+  "type": "object",
+  "required": [
+    "evidence_id",
+    "capability_id",
+    "outcome",
+    "independence",
+    "strength",
+    "scope",
+    "support_provenance"
+  ],
+  "properties": {
+    "evidence_id": {
+      "type": "string"
+    },
+    "capability_id": {
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "correct",
+        "incorrect",
+        "partial",
+        "unknown"
+      ]
+    },
+    "independence": {
+      "enum": [
+        "unassisted",
+        "assisted",
+        "unknown"
+      ]
+    },
+    "strength": {
+      "enum": [
+        "strong",
+        "medium",
+        "weak"
+      ]
+    },
+    "scope": {
+      "enum": [
+        "supported_completion",
+        "independent_reproduction",
+        "near_transfer",
+        "far_transfer",
+        "delayed_independent_performance"
+      ]
+    },
+    "evidence_format": {
+      "enum": [
+        "recognition_mcq",
+        "free_recall",
+        "explanation",
+        "step_execution",
+        "artifact_execution",
+        "artifact_performance",
+        "scenario_performance",
+        "oral_defense",
+        "live_performance",
+        "novel_unassisted_transfer",
+        "compression_output",
+        "plan_output",
+        "ai_generated_output",
+        "unknown"
+      ]
+    },
+    "mastery_eligible": {
+      "type": "boolean"
+    },
+    "format_semantics": {
+      "type": "object"
+    },
+    "support_provenance": {
+      "type": "object"
+    },
+    "context_signals": {
+      "type": "object",
+      "properties": {
+        "response_latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "signal_weight": {
+          "const": "weak"
+        },
+        "authority": {
+          "enum": [
+            "context_only"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "verifier": {
+      "type": "object"
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_event_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifact_metadata": {
+      "type": "object"
+    },
+    "performance_metadata": {
+      "type": "object"
+    },
+    "support_kind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "accessibility",
+        "pedagogical",
+        "cognitive_delegation"
+      ]
+    },
+    "simulation_fidelity": {
+      "type": "object"
+    }
+  }
+}
