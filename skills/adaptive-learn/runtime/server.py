@@ -31,6 +31,15 @@ from .utils import new_id
 MAX_BODY = 512 * 1024
 VERSION = "0.6.0"
 
+# Sent on every response. Clickjacking + sniffing + referrer-leak defenses that do
+# not break the (inline-script) workspace UI. HSTS is added at the TLS edge (Caddy).
+_SECURITY_HEADERS = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Cross-Origin-Opener-Policy", "same-origin"),
+)
+
 
 class ServerConfig:
     def __init__(self, *, host: str = "127.0.0.1", port: int = 8777,
@@ -70,7 +79,8 @@ def _handler(cfg: ServerConfig):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("X-Content-Type-Options", "nosniff")
+            for h, v in _SECURITY_HEADERS:
+                self.send_header(h, v)
             self.end_headers()
             self.wfile.write(body)
 
@@ -167,6 +177,8 @@ def _handler(cfg: ServerConfig):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
+                    for h, v in _SECURITY_HEADERS:
+                        self.send_header(h, v)
                     self.end_headers()
                     return self.wfile.write(body)
                 return self._send(200, {"service": "adaptive-learning-os", "version": VERSION,

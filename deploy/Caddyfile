@@ -3,6 +3,12 @@
 # certificate automatically once the DNS A record and ports 80/443 are in place.
 adaptive.itinnovations.az {
     encode gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
     reverse_proxy app:8777
 }
 

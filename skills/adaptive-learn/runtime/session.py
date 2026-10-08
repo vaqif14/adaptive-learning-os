@@ -332,6 +332,17 @@ class SessionKernel:
         create_workspace(stage, norm, session_id)
         write_json(stage / "frontend/src/data/roadmap.json",
                    {**norm, "workspace_directory": str((d / "workspace").resolve())})
+        # Carry forward the learner's in-progress work for nodes that survive the
+        # new roadmap, so replacing the roadmap never silently blanks a submission.
+        import shutil
+        old_ws = d / "workspace"
+        if old_ws.exists():
+            for n in norm["nodes"]:
+                for sub in ("submission", "feedback"):
+                    src = old_ws / "modules" / n["id"] / sub
+                    dst = stage / "modules" / n["id"] / sub
+                    if src.is_dir() and dst.parent.exists():
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
         sync_tree(stage)
         ws = workspace_metadata(d / "workspace")
         session["learning_workspace"] = ws
