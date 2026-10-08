@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Hosted deploy (Docker + Caddy)
+- Added a standalone hosted-deploy setup for "IT Innovations · Adaptive Learning": `Dockerfile` (zero-dep image: `pip install .`, non-root, healthcheck, serves the API + `decks/workspace.html` UI), `.dockerignore`, and `deploy/` (docker-compose with the app behind Caddy auto-HTTPS, `.env.example`, `Caddyfile` for `adaptive.itinnovations.az`, and a deploy README). The public bind is fail-closed — the container refuses to start without `ADAPTIVE_API_TOKEN`; Caddy terminates TLS and reverse-proxies to the internal app; the ledger persists in a named volume. Build + run verified (health open, `/api` 401 without token / 200 with token, UI served). Deploy README documents the untrusted-code-execution caveat (enable container/microVM isolation for public multi-user use).
+
 ### Follow-up learning and persistence audit
 - Verify ledger record shape, session identity, sequence and hash chain together; reject writes to damaged journals while preserving their valid prefix and original bytes. `next` reports `repair_ledger`; inspection rebuilds evidence.
 - Enforce evidence-format ceilings when reading, exclude future/malformed evidence, and reject invalid numerical scores instead of silently clamping them into successful observations.

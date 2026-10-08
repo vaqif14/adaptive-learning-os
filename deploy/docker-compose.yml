@@ -1,0 +1,38 @@
+# Hosted deploy: Adaptive Learning OS behind Caddy (auto-HTTPS).
+# 1) Point DNS: adaptive.itinnovations.az  A  <server-ip>
+# 2) deploy/.env  ->  ADAPTIVE_API_TOKEN=<long random token>   (see .env.example)
+# 3) cd deploy && docker compose up -d --build
+# The app is never published directly; only Caddy exposes 80/443.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: adaptive-learning-os:latest
+    environment:
+      # Fail-closed: the app refuses to start on a public bind without this.
+      ADAPTIVE_API_TOKEN: ${ADAPTIVE_API_TOKEN:?set ADAPTIVE_API_TOKEN in deploy/.env}
+      PORT: "8777"
+    volumes:
+      - learning-data:/app/.learning   # persist the append-only ledger + sessions
+    expose:
+      - "8777"                         # internal only; reachable by caddy, not the host
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  learning-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,19 @@
+.git
+.github
+.gitignore
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+build/
+*.egg-info/
+.learning/
+node_modules/
+.DS_Store
+.video_agent/
+reviews/
+tests/
+deploy/
+Dockerfile
+# decks/ is intentionally NOT ignored: the served UI ships in the image.

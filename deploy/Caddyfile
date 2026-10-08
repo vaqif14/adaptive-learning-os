@@ -1,0 +1,11 @@
+# Subdomain hosting (recommended): the app serves at "/" with absolute /api paths,
+# so a dedicated host avoids any path-prefix rewriting. Caddy gets a Let's Encrypt
+# certificate automatically once the DNS A record and ports 80/443 are in place.
+adaptive.itinnovations.az {
+    encode gzip
+    reverse_proxy app:8777
+}
+
+# Path-prefix hosting (e.g. itinnovations.az/adaptive-learning) is possible but
+# needs the UI to use relative fetch paths and a strip_prefix here; a subdomain is
+# simpler and is the supported default.
