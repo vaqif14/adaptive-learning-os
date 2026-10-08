@@ -18,6 +18,17 @@ services:
     expose:
       - "8777"                         # internal only; reachable by caddy, not the host
     restart: unless-stopped
+    # Defense-in-depth for the in-container code executor (not a full sandbox —
+    # enable ADAPTIVE_EXECUTOR=container / microVM for untrusted public code).
+    read_only: true                    # root FS read-only; code can't modify itself
+    tmpfs:
+      - /tmp                           # writable scratch for the verifier (temp dirs)
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    pids_limit: 256
 
   caddy:
     image: caddy:2

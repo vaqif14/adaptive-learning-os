@@ -20,8 +20,9 @@ RUN pip install --no-cache-dir . \
 # UI decks (served at /). Kept as a later layer so the install layer caches.
 COPY decks ./decks
 
-# Session data lives here (mount a volume to persist the append-only ledger).
-RUN mkdir -p /app/.learning && chown -R appuser:appuser /app
+# App code stays root-owned and read-only to the runtime user (it cannot modify its
+# own code). Only the session-data dir is writable by appuser.
+RUN mkdir -p /app/.learning && chown appuser:appuser /app/.learning
 USER appuser
 
 EXPOSE 8777
