@@ -854,6 +854,31 @@ def cmd_set_roadmap(args):
     printj(kernel(args).set_roadmap(args.session, plan))
 
 
+def cmd_efficacy(args):
+    from runtime.efficacy import summarize, learning_curve, cohort
+    k = kernel(args)
+    if args.all:
+        base = workspace(args) / ".learning" / "sessions"
+        sessions = {}
+        if base.exists():
+            for sd in sorted(base.iterdir()):
+                if not sd.is_dir():
+                    continue
+                try:
+                    sessions[sd.name] = k.ledger(sd.name).verified_records()
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+        printj(cohort(sessions))
+        return
+    if not args.session:
+        raise SystemExit("provide --session or --all")
+    recs = k.ledger(args.session).verified_records()
+    out = summarize(recs)
+    if args.curve:
+        out["learning_curve"] = learning_curve(recs)
+    printj(out)
+
+
 def cmd_attest(args):
     printj(kernel(args).attest(args.session, args.node, outcome=args.outcome,
                                assessor=args.assessor, note=args.note))
@@ -1312,6 +1337,12 @@ def parser():
     sr.add_argument("--session", required=True)
     sr.add_argument("--roadmap-file", required=True)
     sr.set_defaults(func=cmd_set_roadmap)
+
+    ef = sp.add_parser("efficacy", help="learning-outcome metrics from the ledger (data for an efficacy pilot; not proof by itself)")
+    ef.add_argument("--session")
+    ef.add_argument("--all", action="store_true", help="aggregate across all sessions (cohort)")
+    ef.add_argument("--curve", action="store_true", help="include the per-trial learning curve")
+    ef.set_defaults(func=cmd_efficacy)
 
     at = sp.add_parser("attest", help="qualified-assessor judgment for a non-executable node (advances it, never mastery)")
     at.add_argument("--session", required=True)
