@@ -700,11 +700,12 @@ def cmd_serve(args):
     # Default UI is the live split-screen workspace (talks to /api); academy.html
     # (catalog demo) is still available via --ui.
     ui = Path(args.ui).resolve() if args.ui else (Path(__file__).resolve().parents[3] / "decks" / "workspace.html")
-    # Local-first: with no token on loopback, run without auth (user runs it on
-    # their own machine). Binding beyond loopback without a token still refuses.
-    anon = args.allow_anon or not (args.token or os.environ.get("ADAPTIVE_API_TOKEN"))
+    # Fail-closed by default: /api executes code, so with no token the server
+    # refuses to start unless anonymous loopback is EXPLICITLY opted into with
+    # --allow-anon. This stops a repo user from unknowingly running an auth-free
+    # code-execution API. (ServerConfig still refuses anon/no-token off loopback.)
     cfg = ServerConfig(host=args.host, port=args.port, token=args.token,
-                       allow_anon=anon, ui_file=ui if ui.is_file() else None,
+                       allow_anon=args.allow_anon, ui_file=ui if ui.is_file() else None,
                        prefer_backend=args.prefer, workspace=workspace(args))
     run_server(cfg)
 
