@@ -101,5 +101,5 @@ def create_workspace(root: Path, plan: dict, session_id: str) -> dict:
     write_json(frontend / "src" / "data" / "roadmap.json", {**plan, "workspace_directory": str(root.resolve())})
     (frontend / ".gitignore").write_text("node_modules/\ndist/\n", encoding="utf-8")
     with (root / "README.md").open("a", encoding="utf-8") as f:
-        f.write("\nReact interfeysi: frontend/ (npm install, npm run dev). Dərslər və tapşırıq şərtləri burada; kod practice-i IDE-də submission/ daxilində.\n")
+        f.write("\nReact interfeysi: frontend/ (npm install, npm run dev). Dərslər və tapşırıq şərtləri burada; praktik iş (kod, mətn, həll, qeyd — tapşırığın tələb etdiyi formada) submission/ daxilində.\n")
     return {"frontend_directory": str(frontend.resolve()), "directory": str(root.resolve()), "index_html": str((root / "index.html").resolve()), "roadmap_json": str((root / "roadmap.json").resolve())}

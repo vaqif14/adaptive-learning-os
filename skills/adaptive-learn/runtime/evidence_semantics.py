@@ -20,10 +20,13 @@ FORMAT_MAX_STRENGTH = {
     "compression_output": "weak",
     "plan_output": "weak",
     "ai_generated_output": "weak",
-    "unknown": "strong",
+    "unknown": "medium",
 }
 
 NON_MASTERY_FORMATS = {"compression_output", "plan_output", "ai_generated_output"}
+
+# A declared outcome with no runtime check behind it can never be strong, whatever the format.
+SELF_REPORTED_MAX_STRENGTH = "medium"
 
 
 @dataclass(frozen=True)
@@ -39,16 +42,22 @@ def normalize_evidence_semantics(
     evidence_format: str,
     requested_strength: str,
     independence: str,
+    *,
+    self_reported: bool = False,
 ) -> EvidenceSemantics:
     if requested_strength not in STRENGTH_ORDER:
         raise ValueError(f"invalid strength: {requested_strength}")
-    max_strength = FORMAT_MAX_STRENGTH.get(evidence_format, "strong")
+    max_strength = FORMAT_MAX_STRENGTH.get(evidence_format, "medium")
     requested_rank = STRENGTH_ORDER[requested_strength]
     max_rank = STRENGTH_ORDER[max_strength]
     normalized = requested_strength if requested_rank <= max_rank else max_strength
     reasons: list[str] = []
     if normalized != requested_strength:
         reasons.append(f"format_ceiling:{evidence_format}->{max_strength}")
+    if self_reported and requested_rank > STRENGTH_ORDER[SELF_REPORTED_MAX_STRENGTH]:
+        if STRENGTH_ORDER[normalized] > STRENGTH_ORDER[SELF_REPORTED_MAX_STRENGTH]:
+            normalized = SELF_REPORTED_MAX_STRENGTH
+        reasons.append(f"self_reported_ceiling:{SELF_REPORTED_MAX_STRENGTH}")
     mastery_eligible = evidence_format not in NON_MASTERY_FORMATS
     if evidence_format == "novel_unassisted_transfer" and independence != "unassisted":
         mastery_eligible = False

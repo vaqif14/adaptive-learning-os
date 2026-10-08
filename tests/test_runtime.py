@@ -70,7 +70,7 @@ class RuntimeTests(unittest.TestCase):
                 "capability_id": "c1",
                 "outcome": "correct",
                 "independence": "unassisted",
-                "strength": "strong",
+                "strength": "strong", "correctness_checked": True,
                 "scope": "near_transfer",
                 "support_provenance": {},
                 "source_event_ids": [],
@@ -147,14 +147,14 @@ class RuntimeTests(unittest.TestCase):
             led = k.ledger(s["session_id"])
             led.append("evidence", {
                 "evidence_id": "assisted", "capability_id": "cap", "outcome": "correct",
-                "independence": "assisted", "strength": "strong", "scope": "supported_completion",
+                "independence": "assisted", "strength": "strong", "correctness_checked": True, "scope": "supported_completion",
                 "support_provenance": {"hints_count": 3}, "source_event_ids": [],
             })
             p1 = k.rebuild_projection(s["session_id"])
             self.assertEqual(p1["demonstrated_capabilities"]["cap"]["strong_unassisted_successes"], 0)
             led.append("evidence", {
                 "evidence_id": "unassisted", "capability_id": "cap", "outcome": "correct",
-                "independence": "unassisted", "strength": "strong", "scope": "independent_reproduction",
+                "independence": "unassisted", "strength": "strong", "correctness_checked": True, "scope": "independent_reproduction",
                 "support_provenance": {}, "source_event_ids": [],
             })
             p2 = k.rebuild_projection(s["session_id"])
@@ -167,7 +167,7 @@ class RuntimeTests(unittest.TestCase):
             led = k.ledger(s["session_id"])
             base = {
                 "capability_id": "cap", "outcome": "correct", "independence": "unassisted",
-                "strength": "strong", "scope": "independent_reproduction", "support_provenance": {},
+                "strength": "strong", "correctness_checked": True, "scope": "independent_reproduction", "support_provenance": {},
                 "source_event_ids": [],
             }
             led.append("evidence", {"evidence_id": "fast", **base, "context_signals": {

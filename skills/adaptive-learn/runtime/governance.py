@@ -63,3 +63,55 @@ class SystemTrace:
 
     def to_dict(self):
         return asdict(self)
+
+
+def summarize_traces(traces: list[dict]) -> dict:
+    """Aggregate a session's SystemTrace records into an observability report.
+
+    Takes the trace payloads recorded in the ledger (route decisions, tool calls,
+    verifier outcomes, failures/fallbacks) and rolls them up so an operator can see
+    what the system actually did in a session without replaying it by hand.
+    """
+    def _tally(key: str) -> dict:
+        out: dict[str, int] = {}
+        for t in traces:
+            v = t.get(key)
+            if v is None:
+                continue
+            out[str(v)] = out.get(str(v), 0) + 1
+        return out
+
+    tools: dict[str, int] = {}
+    failures: list[str] = []
+    total_model_calls = 0
+    total_in = total_out = total_latency = 0
+    have_in = have_out = have_latency = False
+    for t in traces:
+        for tool in t.get("tools_called") or []:
+            tools[str(tool)] = tools.get(str(tool), 0) + 1
+        total_model_calls += int(t.get("model_calls") or 0)
+        if t.get("failure"):
+            failures.append(str(t["failure"]))
+        if t.get("input_tokens") is not None:
+            total_in += int(t["input_tokens"]); have_in = True
+        if t.get("output_tokens") is not None:
+            total_out += int(t["output_tokens"]); have_out = True
+        if t.get("latency_ms") is not None:
+            total_latency += int(t["latency_ms"]); have_latency = True
+
+    fallbacks = sum(1 for t in traces if t.get("fallback"))
+    return {
+        "traces": len(traces),
+        "routes": _tally("route"),
+        "pedagogical_intents": _tally("pedagogical_intent"),
+        "policy_moves": _tally("policy_move"),
+        "verifier_results": _tally("verifier_result"),
+        "tools": tools,
+        "total_model_calls": total_model_calls,
+        "total_input_tokens": total_in if have_in else None,
+        "total_output_tokens": total_out if have_out else None,
+        "total_latency_ms": total_latency if have_latency else None,
+        "failures": len(failures),
+        "failure_detail": failures,
+        "fallbacks": fallbacks,
+    }

@@ -70,8 +70,9 @@ Source rights/provenance
 - Three-level diagnosis restraint.
 - Adaptive evidence progression with expert skip.
 - Support Provenance rather than “assistance debt”.
-- Deterministic Python verifier for low-risk snippets.
+- Deterministic Python verifier for low-risk snippets, plus language-agnostic execution backends (see [Verification and execution](#verification-and-execution)).
 - Evidence-format ceilings and compression ≠ mastery.
+- Self-reported evidence ceiling: only runtime-checked evidence can be strong (see [Evidence trust](#evidence-trust-what-counts-as-strong)).
 - Question-interpretation gate before misconception inference.
 - Review-item selection by capability type.
 - Cognitive Delegation Gate and Protected Cognition contract.
@@ -93,7 +94,25 @@ The package contains declarative primitive manifests for:
 - `audio_dialogue`
 - `source_comparison`
 
-These M4 primitives remain **contracts only**. Learning starts now generate a separate offline HTML roadmap and task workspace automatically.
+These M4 primitives remain **contracts only**: there is no runnable simulator or audio-dialogue engine yet. Learning starts now generate a separate offline HTML roadmap and task workspace automatically.
+
+### v0.6.0 runtime additions
+
+| Area | What runs | CLI |
+|---|---|---|
+| Ledger integrity | Hash-chained, locked, crash-tolerant appends; readers use only the verified chain prefix. Operator check with dated receipt + cadence; exit 2 if broken | `ledger-verify`, `inspect` |
+| Source trust (Epistemic Gate) | Credibility tier + freshness-by-volatility; combines with the Rights Gate (deny > review > allow) | `source-trust` |
+| Observability | Live `SystemTrace` per route + manual turn logging; per-session aggregation over the verified chain | `trace`, `observability` |
+| Execution | 12 languages: python, javascript, typescript, go, java, kotlin, rust, c, cpp, ruby, php, sql. Local toolchain or per-run container | `languages`, `run-exercise`, `verify-fastapi` |
+| Workspace checks | Reads `submission/`, runs `checks/check.json`, writes `feedback/`, records evidence | `workspace-check` |
+| Mastery | BKT estimate decayed to now; qualified breadth + transfer; latest failure reopens assessment | `mastery` |
+| Spaced review | Due-time-aware spacing heuristic; massed practice cannot extend intervals; 48 h reminder | `review-due` |
+| Learner model | Cross-session, time-aware aggregation from verified ledgers | `learner-state` |
+| Diagnosis history | Persistent failures, co-failure clusters, misconception tally | `diagnose-history` |
+| Explain-back coverage | Lexical coverage only; correctness remains unknown pending contextual assessment | `listener-check` |
+| Teaching modes | intake, roadmap, socratic, checker, listener, examiner | `modes`, `prompt`, `intake` |
+| HTTP API + web app | Stdlib server (no deps). Session/route/verify/inspect/observability endpoints + split-screen Monaco workspace at `/`. Loopback runs auth-free; beyond loopback needs a token | `serve` |
+| Knowledge graph | Optional graphify `graph.json` provider | `graph-curriculum`, `graph-coverage`, `graph-anchors` |
 
 ## CLI
 
@@ -207,9 +226,25 @@ NotebookLM is integrated through the installed `notebooklm` CLI (or `nlm`). Lear
 The runtime also separates:
 
 ```text
-Epistemic Gate: Can I trust this source?
-Rights Gate: May I use this source this way?
+Epistemic Gate: Can I trust this source?   -> alearn source-trust
+Rights Gate:    May I use this source this way?  -> alearn source-use
 ```
+
+Both gates are enforced in code, not just named:
+
+```bash
+# Epistemic: credibility tier + freshness for the claim's volatility
+alearn source-trust --source-id doc1 --source-type official \
+  --publication-date 2015-01-01 --claim-volatility volatile
+# -> status: stale  (a 10-year-old doc fails a volatile claim regardless of tier)
+
+# Combined: trustworthy AND permitted (deny > review > allow)
+alearn source-trust --source-id doc1 --source-type forum \
+  --publication-date 2026-09-01 --operation quote
+# -> status: review_required  (low-tier source needs corroboration)
+```
+
+Credibility tiers: primary/official/peer-reviewed → high; practitioner/docs → medium; forum/blog/user-generated/AI-derived → low (needs 2+ independent corroborators or human review). Freshness volatility classes: `stable` (never expires), `slow` (~5y), `volatile` (~1y), `breaking` (~30d). Retracted or un-provenanced AI-derived sources are rejected; unknowns never silently become trusted.
 
 Frozen invariants:
 
@@ -252,11 +287,49 @@ Priority:
 
 The system tracks coverage dimensions to prevent repetitive AI practice loops. It varies surface form/context while preserving the target underlying capability.
 
-## Deterministic Python verifier
+## Verification and execution
 
-The included verifier uses AST policy checks, isolated Python mode, temporary working directory, timeout, resource limits, and optional expected output/trusted assertions.
+**Python verifier.** AST policy checks, isolated Python mode, temporary working directory, timeout, resource limits, a separate trusted harness, and optional expected output/trusted assertions. It is enabled per domain adapter and is a **best-effort local verifier**, not a hardened security sandbox.
 
-It is a **best-effort local verifier**, not a hardened security sandbox. Arbitrary untrusted code requires container/VM isolation.
+**Execution backends** (`runtime/execution.py`). `LocalToolchainBackend` uses host toolchains for development. `ContainerBackend` is the production path: one container per run, `--network none`, read-only root, `cap-drop ALL`, non-root user. A language whose toolchain or image is missing returns an install/image instruction, never "unsupported". Arbitrary untrusted code belongs in `ContainerBackend`.
+
+## Evidence trust: what counts as strong
+
+Mastery breadth and transfer require **strong unassisted successes** with an explicit correctness check. Weaker graded results can inform uncertainty and feedback; lexical coverage cannot grade correctness:
+
+| Evidence path | Ledger source | Max strength |
+|---|---|---|
+| `verify-python` (executed + correctness checked) | `python_verifier` | strong |
+| `workspace-check` (executed + checks passed) | `workspace_check` | strong |
+| `verify-exercise` (executed + correctness checked) | `exercise_verifier` | strong |
+| `listener-check` (lexical coverage only) | `listener` | observation; no mastery credit |
+| `evidence` (manual entry by agent or learner) | `cli_evidence_entry` | **medium** |
+
+Manual entries are declarations, so they still feed the learner model at reduced weight but can never prove mastery. The ceiling is applied when the record is written (payload `verification: "self_report"`) and again when it is read (ledger provenance). That keeps ledgers written before this rule from being trusted retroactively.
+
+## Learning decisions and retention
+
+`next` separates **ready_to_advance** (one verified independent pass, no newer failure) from **mastered** (current BKT threshold, qualified breadth, transfer/delayed evidence, and a current qualified success). A completed lesson sequence without mastery returns `consolidate`; it never claims the course goal was met. One failure requests `feedback`; three consecutive unresolved failures request `change_approach`. Decisions rebuild from the verified ledger, not a potentially stale projection file. A placeholder roadmap still returns `build_roadmap` until a real plan is attached using `set-roadmap`.
+
+`mastery` accounts for elapsed time through the current instant. Undated and future observations cannot award current mastery. A `delayed_independent_performance` label needs at least 24 hours since the previous graded touch. These parameters are operational defaults, not empirical guarantees of learning.
+
+Review spacing grows only after an independent recall at or after its due time. Early repeated successes, partial answers and assisted answers do not postpone the deadline. Lapses shorten it. The 48-hour flag is an operational reminder, not a scientifically established apply-or-lose law. The scheduler is a transparent heuristic, not trained HLR or FSRS.
+
+### Recording assistance
+
+`verify-python` and `verify-exercise` accept `--attempt-id`, `--hints-count`, `--worked-example-shown`, `--ai-direct-answer-revealed`, and `--conceptual-scaffold`. The Python HTTP endpoint accepts `attempt_id` and the equivalent `support_provenance` object. `workspace-check` reads those fields from `checks/check.json`; omitted independence defaults to `unknown`.
+
+Keep an attempt ID stable across revisions of the same task. The runtime merges recorded assistance monotonically for that capability and attempt; an empty support object cannot erase earlier help. Use a new ID only for a genuinely new task. Without an ID, support is conservatively inherited within the capability's implicit attempt. Rechecking a named task replaces its result in the BKT input instead of adding independent trials. The host still must honestly record task novelty, scope and assistance; code execution alone cannot establish who wrote the answer.
+
+Legacy listener records are excluded from learning judgments without rewriting the ledger. Older records lacking `correctness_checked: true` no longer count as strong. Rebuild a projection with `project` when inspecting a previously cached view.
+
+## Assessment and history safeguards
+
+- `rubric-check` records attributed criterion scores, reasons and excerpts bound to the submission's SHA-256. Critical failed criteria block an overall pass. It is a validated assessment report, not an automatic semantic grader; evidence remains medium. See [the runnable format example](skills/adaptive-learn/references/rubric-assessment.md).
+- `next` returns `request_assessment` after ungraded lexical coverage, `wait_for_review` with a `resume_at` time when delayed evidence is premature, and `repair_ledger` if the journal is damaged. A due capability review includes the actual review items. Hosts must stop and wait on these external requirements rather than loop.
+- `learner-state` and `diagnose-history` reject mixed learners or mixed topics unless selected with `--learner-id` and `--topic`. Capability IDs should retain the same meaning within a topic. Records are ordered by UTC timestamps; invalid/future evidence is excluded. Persistent failures count unresolved failures after the latest success and only sessions that actually failed.
+- Exact executable artifact/check replays are fingerprinted. Renaming an attempt cannot turn a replay into independent trials or erase recorded assistance. Named revisions and artifact replays share one trial in the knowledge model.
+- Ledger readers verify record shape, session identity, sequence and the hash chain. Appends reject damaged journals before writing; learning actions request repair, preserving original data. Inspection rebuilds its projection. Files outside a module cannot enter workspace checks through symlinks, and executor failures without a completed check remain unknown outcomes.
 
 ## Source workflow
 
@@ -281,11 +354,11 @@ The host agent should execute the discovery request automatically with its resea
 ## Validation
 
 ```bash
-python skills/adaptive-learn/scripts/validate_package.py
-python -m unittest discover -s tests -v
+python3 skills/adaptive-learn/scripts/validate_package.py
+python3 -m pytest -q
 ```
 
-The final release is also verified from a fresh extraction of the ZIP.
+CI (`.github/workflows/ci.yml`) runs the suite, the validator and a wheel smoke test on ubuntu and macOS × Python 3.11–3.13.
 
 ## Automatic workspace
 
@@ -310,7 +383,7 @@ The learner writes files in `submission/`; the agent verifies them, saves feedba
 and records evidence in the session ledger. HTML is an initial plan snapshot;
 opening tasks does not mark them complete. Later sessions reuse existing work.
 
-The primary learning interface is generated in `workspace/frontend/` as a React + Vite project with roadmap and lesson components. Run `npm install` and `npm run dev` there. Coding practice stays in the IDE under each module’s `submission/`. Include a `lesson` string in each roadmap node for learning content. The UI currently reads a plan snapshot; verification continues through the agent and runtime.
+The primary learning interface is generated in `workspace/frontend/` as a React + Vite project with roadmap and lesson components. Run `npm install` and `npm run dev` there. Practice work, in whatever form the task requires (code, text, worked solutions, notes), stays in each module’s `submission/`; code is edited in the IDE. `workspace-check` runs executable work only; a module whose `checks/check.json` declares a non-executable `kind` gets `not_runtime_checkable` with directions to `listener-check` or rubric grading. Include a `lesson` string in each roadmap node for learning content. The UI currently reads a plan snapshot; verification continues through the agent and runtime.
 
 ## NotebookLM CLI connection
 
@@ -340,3 +413,13 @@ The adapter implements notebook listing, binding, and source enumeration. The ho
 agent reads selected sources and develops the learning plan; notebook selection
 alone does not import a curriculum or establish learner mastery. See the upstream
 [notebooklm-py CLI reference](https://github.com/teng-lin/notebooklm-py/blob/main/docs/cli-reference.md).
+
+## Known limitations
+
+- **Single operator.** The HTTP API has one shared Bearer token: no user accounts, roles or tenant isolation. Hosted multi-user use needs those first.
+- **Host-agent dependence.** Gates and modes take effect when the agent calls the runtime; nothing forces it to. The evidence-trust rule limits the damage: skipping the checks cannot produce mastery.
+- **Non-code domains.** `listener-check` reports lexical coverage and requests semantic review; it cannot certify understanding, including for paraphrases and negated claims. Rubric-graded work recorded through `evidence` stays at medium until an authenticated grader path exists. The runtime must not manufacture completion when that verifier is unavailable.
+- **Uncalibrated learner model.** BKT parameters are engineering defaults (`p_learn` 0.15, `p_slip` 0.1, `p_guess` 0.2), not fitted to learner data.
+- **No empirical validation.** The design follows retrieval-practice and spacing research; this implementation has no outcome study or A/B data yet.
+- **Container coverage.** The container path is smoke-proven for python and node; other language images are configured but not yet exercised in CI.
+- **M4 primitives** (`scenario_simulator`, `audio_dialogue`, …) are contracts only.

@@ -13,7 +13,7 @@ from runtime.policy import TeachingContext, choose_move
 
 def ev(**kw):
     base = dict(evidence_id="e", capability_id="cap", outcome="correct", independence="unassisted",
-                strength="strong", scope="near_transfer", mastery_eligible=True, support_provenance={})
+                strength="strong", correctness_checked=True, scope="near_transfer", mastery_eligible=True, support_provenance={})
     base.update(kw)
     return base
 
@@ -60,7 +60,7 @@ class EvidenceBridgeTests(unittest.TestCase):
         self.assertFalse(f["far_transfer_available"])
 
     def test_heavy_support_flagged(self):
-        proj = {"demonstrated_capabilities": {"cap": {"evidence_count": 5, "strong_unassisted_successes": 0, "scope_successes": {}}}, "uncertainties": ["cap"]}
+        proj = {"demonstrated_capabilities": {"cap": {"evidence_count": 5, "supported_attempts": 5, "strong_unassisted_successes": 0, "scope_successes": {}}}, "uncertainties": ["cap"]}
         f = progress_flags(proj, "cap")
         self.assertTrue(f["prior_support_heavy"])
         self.assertTrue(f["capability_uncertain"])

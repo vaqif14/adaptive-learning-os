@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
+from .evidence_history import ordered_observations, score_fraction
 
-# Spaced-review scheduling via half-life regression (Settles & Meeder 2016): the
-# review interval grows with successful recalls and shrinks after lapses. This is
-# the FSRS-family idea in a dependency-free form. Review is due when now >= the
-# computed next-review time.
+# Conservative, deterministic spacing heuristic; not a fitted HLR or FSRS model.
+# Only due, independent recalls extend spacing. Massed practice and assisted
+# attempts cannot push a due date back. Parameters require learner-data validation.
 
 MIN_INTERVAL_DAYS = 0.5
 MAX_INTERVAL_DAYS = 365.0
@@ -40,34 +40,43 @@ def _parse(ts):
 def half_life_days(recalls: int, lapses: int, base: float = 1.0) -> float:
     # 2^(successes - lapses), clamped. Each clean recall ~doubles the interval;
     # each lapse halves it.
-    interval = base * (2.0 ** (recalls - lapses))
+    interval = base * (2.0 ** max(-20, min(20, recalls - lapses)))
     return max(MIN_INTERVAL_DAYS, min(MAX_INTERVAL_DAYS, interval))
 
 
 def schedule(capability: str, observations: list[dict], *, now: datetime | None = None) -> ReviewState:
     """observations: ordered {correct: bool, timestamp: iso}. Returns next due time."""
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     recalls = 0
     lapses = 0
-    last_t = None
-    for obs in observations:
+    interval = 1.0
+    nxt = None
+    first_t = None
+    last_recall = None
+    for obs in ordered_observations(observations, now):
+        t = _parse(obs.get("timestamp"))
+        if first_t is None:
+            first_t = t
+            nxt = t  # an unproven capability is due now
         c = obs.get("correct")
-        val = 1.0 if c is True else 0.0 if c is False else float(c or 0.0)
-        if val >= 1.0:
-            recalls += 1                      # full, independent recall extends spacing
+        val = score_fraction(c)
+        clean = val >= 1.0 and obs.get("qualified", True) is True
+        if clean and (last_recall is None or t >= nxt):
+            recalls += 1
+            interval = min(MAX_INTERVAL_DAYS, 2.0 if last_recall is None else interval * 2)
+            nxt = t + timedelta(days=interval)
+            last_recall = t
         elif val <= 0.0:
             lapses += 1
-            recalls = max(0, recalls - 1)     # a lapse shortens it
-        # a PARTIAL recall (0 < val < 1) neither extends nor shortens: it holds.
-        t = _parse(obs.get("timestamp"))
-        if t:
-            last_t = t
-    interval = half_life_days(recalls, lapses)
-    anchor = last_t or now
-    nxt = anchor + timedelta(days=interval)
-    # 48-hour "apply-or-lose" window: a freshly-learned concept (<=1 clean recall)
-    # decays fast unless applied/reviewed within 48h of the last touch (Dan Martell).
-    apply_by = (anchor + timedelta(hours=48)) if last_t else None
+            interval = max(MIN_INTERVAL_DAYS, interval / 2)
+            nxt = min(nxt, t + timedelta(days=interval))
+        # Partial, assisted, or early repeated recalls leave the deadline intact.
+    nxt = nxt or now
+    anchor = last_recall or first_t
+    # Product reminder, not a scientifically established 48-hour forgetting law.
+    apply_by = (anchor + timedelta(hours=48)) if anchor else None
     at_risk = bool(apply_by and now >= apply_by and recalls <= 1)
     return ReviewState(
         capability=capability,

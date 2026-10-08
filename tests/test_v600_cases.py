@@ -56,7 +56,7 @@ class Case2UncertaintyTests(unittest.TestCase):
             self.assertIn("cap", p1["uncertainties"])
             # a clean unassisted independent success clears it (no transfer required)
             led.append("evidence", {"evidence_id": "s", "capability_id": "cap", "outcome": "correct",
-                                    "independence": "unassisted", "strength": "strong", "scope": "independent_reproduction",
+                                    "independence": "unassisted", "strength": "strong", "correctness_checked": True, "scope": "independent_reproduction",
                                     "mastery_eligible": True, "support_provenance": {}})
             p2 = k.rebuild_projection(s["session_id"])
             self.assertNotIn("cap", p2["uncertainties"])

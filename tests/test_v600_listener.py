@@ -15,12 +15,14 @@ class ListenerTests(unittest.TestCase):
         expl = ("Attention takes a weighted sum of values; the query scores against keys by dot "
                 "product, scaled by square root of dimension, and softmax makes weights that sum to one.")
         g = grade_explanation(expl, SRC)
-        self.assertEqual(g["outcome"], "correct")
+        self.assertEqual(g["outcome"], "unknown")
+        self.assertEqual(g["coverage_band"], "sufficient")
         self.assertGreaterEqual(g["coverage"], 0.6)
 
     def test_poor_explanation_reports_missed(self):
         g = grade_explanation("Attention is some AI magic thing.", SRC)
-        self.assertIn(g["outcome"], {"incorrect","partial"})
+        self.assertEqual(g["outcome"], "unknown")
+        self.assertIn(g["coverage_band"], {"low", "partial"})
         self.assertTrue(g["missed"])          # tells you what you missed
         self.assertIn("softmax", g["missed"])
 

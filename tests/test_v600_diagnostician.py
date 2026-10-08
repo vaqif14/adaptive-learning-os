@@ -5,10 +5,11 @@ sys.path.insert(0, str(SKILL))
 from runtime.session import SessionKernel
 from runtime.contracts import LearningContract
 from runtime.diagnostician import analyze
+from runtime.utils import new_id
 
 def eng(outcome, cap, mis=None, scope="near_transfer"):
-    e={"evidence_id":f"e{id(object())}","capability_id":cap,"outcome":outcome,"independence":"unassisted",
-       "strength":"strong","scope":scope,"mastery_eligible":True,"support_provenance":{}}
+    e={"evidence_id":new_id("ev"),"capability_id":cap,"outcome":outcome,"independence":"unassisted",
+       "strength":"strong","correctness_checked":True,"scope":scope,"mastery_eligible":True,"support_provenance":{}}
     if mis: e["misconception"]=mis
     return e
 

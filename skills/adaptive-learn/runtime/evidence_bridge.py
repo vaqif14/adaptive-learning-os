@@ -15,16 +15,20 @@ def progress_flags(projection: dict, capability: str) -> dict:
     strong = int(cap.get("strong_unassisted_successes") or 0)
     evidence_count = int(cap.get("evidence_count") or 0)
     uncertain = capability in (projection.get("uncertainties") or [])
+    if uncertain:
+        ss = {}  # historical passes cannot authorize progression after a fresh failure
     return {
         "independent_reproduction_available": ss.get("independent_reproduction", 0) > 0,
         "near_transfer_available": ss.get("near_transfer", 0) > 0,
         "far_transfer_available": ss.get("far_transfer", 0) > 0,
         "delayed_independent_performance_available": ss.get("delayed_independent_performance", 0) > 0,
-        "strong_independent_reasoning_available": strong >= MASTERY_MIN_STRONG,
-        # Lots of evidence but no strong unassisted success => the learner has been
-        # carried; the policy should fade support and seek independent reproduction.
-        "prior_support_heavy": evidence_count > 0 and strong == 0,
+        "strong_independent_reasoning_available": strong >= MASTERY_MIN_STRONG and not uncertain,
+        # Only recorded assistance establishes support dependence. Failures alone
+        # do not imply the learner received help.
+        "prior_support_heavy": cap.get("supported_attempts", 0) > 0 and strong == 0,
         "capability_uncertain": uncertain,
+        "attempts_without_progress": cap.get("consecutive_failures", 0),
+        "graded_attempt_available": evidence_count > 0,
     }
 
 
@@ -41,4 +45,7 @@ def apply_evidence_to_context(ctx, projection: dict, capability: str):
     ctx.delayed_independent_performance_available = flags["delayed_independent_performance_available"]
     ctx.strong_independent_reasoning_available = flags["strong_independent_reasoning_available"]
     ctx.prior_support_heavy = flags["prior_support_heavy"]
+    ctx.attempts_without_progress = flags["attempts_without_progress"]
+    ctx.graded_attempt_available = flags["graded_attempt_available"]
+    ctx.repeated_observable_error = flags["attempts_without_progress"] > 0
     return ctx, flags

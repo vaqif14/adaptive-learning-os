@@ -72,9 +72,10 @@ class LedgerTests(unittest.TestCase):
             # simulate a torn write
             with open(lg.path, "a", encoding="utf-8") as f:
                 f.write('{"partial": ')
-            lg.append("event", {"a": 2})  # must not glue onto the torn line
+            with self.assertRaises(ValueError):
+                lg.append("event", {"a": 2})  # never acknowledge an unreadable result
             recs = lg.records()
-            self.assertEqual(len(recs), 2)  # torn line skipped, both good kept
+            self.assertEqual(len(recs), 1)  # valid prefix remains readable; tail preserved
             self.assertFalse(lg.integrity()["chain_ok"])  # corruption detected
 
     def test_unicode_line_separator_cannot_corrupt(self):

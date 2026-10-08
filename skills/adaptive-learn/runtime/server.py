@@ -7,7 +7,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from urllib.parse import urlparse, parse_qs
+
 from .execution import run_exercise, verify_fastapi_app, LANGUAGES, select_backend
+from .session import SessionKernel
+from .contracts import LearningContract
+from .router import RouteContext, route_message
+from .governance import SystemTrace
+from .utils import new_id
 
 # Minimal production server layer (stdlib-only, deps stay []).
 #
@@ -29,7 +36,7 @@ class ServerConfig:
     def __init__(self, *, host: str = "127.0.0.1", port: int = 8777,
                  token: str | None = None, allow_anon: bool = False,
                  ui_file: Path | None = None, prefer_backend: str | None = None,
-                 max_concurrent_runs: int = 4):
+                 max_concurrent_runs: int = 4, workspace: Path | None = None):
         self.host = host
         self.port = port
         self.token = token if token is not None else os.environ.get("ADAPTIVE_API_TOKEN")
@@ -37,6 +44,7 @@ class ServerConfig:
         self.ui_file = ui_file
         self.prefer_backend = prefer_backend
         self.max_concurrent_runs = max(1, int(max_concurrent_runs))
+        self.workspace = Path(workspace).resolve() if workspace else Path.cwd()
         if host not in {"127.0.0.1", "localhost", "::1"} and not self.token:
             raise ValueError("binding beyond loopback requires a token (set ADAPTIVE_API_TOKEN)")
         if not self.token and not self.allow_anon:
@@ -64,9 +72,37 @@ def _handler(cfg: ServerConfig):
             self.end_headers()
             self.wfile.write(body)
 
+        _LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
+
+        def _host_is_local(self) -> bool:
+            # DNS-rebinding defense: a browser pointed at a rebind domain still sends
+            # that domain in Host; we only accept the loopback literals. Missing Host
+            # (HTTP/1.0, non-browser clients) is not a rebinding vector, so allow it.
+            host = self.headers.get("Host")
+            if not host:
+                return True
+            hp = host.rsplit(":", 1)[0].strip("[]").lower()
+            return hp in self._LOOPBACK_NAMES
+
+        def _origin_is_local(self) -> bool:
+            # CSRF defense: a cross-site page's fetch carries its own Origin; same-origin
+            # UI carries the loopback origin. No Origin (curl/CLI) is not a CSRF vector.
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            try:
+                o = urlparse(origin).hostname
+            except ValueError:
+                return False
+            return (o or "").lower() in self._LOOPBACK_NAMES
+
         def _authed(self) -> bool:
             if cfg.allow_anon and self.client_address[0] in {"127.0.0.1", "::1"}:
-                return True
+                # Anonymous loopback is convenient but code-executing: without the
+                # Host/Origin check a malicious web page could DNS-rebind to this port
+                # and POST to /api/run. Require a loopback Host and a same-origin (or
+                # absent) Origin so only genuine local clients get in token-free.
+                return self._host_is_local() and self._origin_is_local()
             if not cfg.token:
                 return False
             auth = self.headers.get("Authorization", "")
@@ -105,11 +141,18 @@ def _handler(cfg: ServerConfig):
         def log_message(self, fmt, *args):  # no request bodies / tokens in logs
             pass
 
+        def _kernel(self):
+            return SessionKernel(cfg.workspace)
+
+        def _query(self):
+            return {k: (v[0] if v else "") for k, v in parse_qs(urlparse(self.path).query).items()}
+
         # --- routes ------------------------------------------------------
         def do_GET(self):
-            if self.path == "/health":
+            path = urlparse(self.path).path
+            if path == "/health":
                 return self._send(200, {"ok": True, "version": VERSION})
-            if self.path in {"/", "/index.html"}:
+            if path in {"/", "/index.html"}:
                 if cfg.ui_file and cfg.ui_file.is_file():
                     body = cfg.ui_file.read_bytes()
                     self.send_response(200)
@@ -118,11 +161,23 @@ def _handler(cfg: ServerConfig):
                     self.end_headers()
                     return self.wfile.write(body)
                 return self._send(200, {"service": "adaptive-learning-os", "version": VERSION,
-                                        "endpoints": ["/health", "/api/languages", "/api/run", "/api/verify-fastapi"]})
-            if self.path == "/api/languages":
-                if not self._authed():
-                    return self._send(401, {"error": "unauthorized"})
+                                        "endpoints": ["/health", "/api/languages", "/api/run", "/api/verify-fastapi",
+                                                       "/api/session/start", "/api/route", "/api/verify-python",
+                                                       "/api/inspect?session=", "/api/observability?session="]})
+            if not self._authed():
+                return self._send(401, {"error": "unauthorized"})
+            if path == "/api/languages":
                 return self._send(200, {"languages": [LANGUAGES[k].to_dict() for k in sorted(LANGUAGES)]})
+            if path in {"/api/inspect", "/api/observability"}:
+                sid = self._query().get("session")
+                if not sid:
+                    return self._send(400, {"error": "need session query param"})
+                try:
+                    k = self._kernel()
+                    out = k.inspect(sid) if path == "/api/inspect" else k.observability(sid)
+                    return self._send(200, out)
+                except (FileNotFoundError, KeyError, ValueError, OSError) as e:
+                    return self._send(404, {"error": type(e).__name__, "detail": str(e)})
             return self._send(404, {"error": "not_found"})
 
         def do_POST(self):
@@ -140,19 +195,78 @@ def _handler(cfg: ServerConfig):
                 run_slots.release()
 
         def _dispatch(self, data):
+            path = urlparse(self.path).path
             backend = select_backend(cfg.prefer_backend)
-            if self.path == "/api/run":
+            if path == "/api/run":
                 lang = data.get("lang"); code = data.get("code")
                 if lang not in LANGUAGES or not isinstance(code, str) or not code:
                     return self._send(400, {"error": "need lang (known) and code (string)"})
                 res = run_exercise(lang, code, stdin=data.get("stdin"),
                                    expect_stdout=data.get("expect_stdout"), backend=backend)
                 return self._send(200, res)
-            if self.path == "/api/verify-fastapi":
+            if path == "/api/verify-fastapi":
                 code = data.get("code"); checks = data.get("checks")
                 if not isinstance(code, str) or not isinstance(checks, list):
                     return self._send(400, {"error": "need code (string) and checks (array)"})
                 return self._send(200, verify_fastapi_app(code, checks, backend=backend))
+
+            # --- pedagogical OS endpoints (file-ledger backed, no new storage) ---
+            if path == "/api/session/start":
+                topic = data.get("topic")
+                goal = data.get("goal")
+                if not isinstance(topic, str) or not topic or not isinstance(goal, str) or not goal:
+                    return self._send(400, {"error": "need topic (string) and goal (string)"})
+                contract = LearningContract(
+                    goal=goal,
+                    goal_mode=data.get("goal_mode") or "learn",
+                )
+                session = self._kernel().start(topic, contract, mode=data.get("mode"))
+                return self._send(200, session)
+
+            if path == "/api/route":
+                sid = data.get("session"); message = data.get("message")
+                if not isinstance(sid, str) or not sid or not isinstance(message, str) or not message:
+                    return self._send(400, {"error": "need session and message"})
+                try:
+                    k = self._kernel()
+                    dec = route_message(message, RouteContext(
+                        mode=data.get("mode"), study_intent=data.get("intent"),
+                        high_stakes=bool(data.get("high_stakes")),
+                    ))
+                    led = k.ledger(sid)
+                    led.append("event", {"event_type": "user_message", "message": message}, {"source": "api"})
+                    led.append("decision", {
+                        "decision_type": "route", "mode": dec.mode, "route": dec.route,
+                        "study_intent": dec.study_intent, "reasons": dec.reasons,
+                    }, {"source": "router"})
+                    k.record_trace(sid, SystemTrace(
+                        trace_id=new_id("trace"), route=dec.route,
+                        pedagogical_intent=dec.study_intent, policy_move=dec.mode,
+                    ).to_dict())
+                    return self._send(200, dec.__dict__)
+                except (FileNotFoundError, KeyError, ValueError, OSError) as e:
+                    return self._send(404, {"error": type(e).__name__, "detail": str(e)})
+
+            if path == "/api/verify-python":
+                sid = data.get("session"); code = data.get("code")
+                if not isinstance(sid, str) or not sid or not isinstance(code, str) or not code:
+                    return self._send(400, {"error": "need session and code (string)"})
+                try:
+                    res = self._kernel().verify_python(
+                        sid, code,
+                        capability=data.get("capability", "python_artifact_behavior"),
+                        independence=data.get("independence", "unknown"),
+                        scope=data.get("scope", "supported_completion"),
+                        evidence_format=data.get("evidence_format", "artifact_execution"),
+                        expected_stdout=data.get("expected_stdout"),
+                        trusted_test_code=data.get("trusted_test_code"),
+                        attempt_id=data.get("attempt_id"),
+                        support_provenance=data.get("support_provenance"),
+                    )
+                    return self._send(200, res)
+                except (FileNotFoundError, KeyError, ValueError, OSError) as e:
+                    return self._send(404, {"error": type(e).__name__, "detail": str(e)})
+
             return self._send(404, {"error": "not_found"})
 
     return Handler

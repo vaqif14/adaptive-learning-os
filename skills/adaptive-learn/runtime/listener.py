@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import re
+import math
 
 # The Listener (role 07): the learner explains an idea in their own words; we grade
-# that explanation against the source and report what they MISSED. Deterministic
-# term/concept-coverage — an honest floor (not full semantic understanding): it
-# catches omitted key terms and off-source claims. The agent can layer deeper
-# semantic grading on top; this makes the check reproducible and offline.
+# lexical overlap against the source and report absent terms. This does not
+# grade meaning, paraphrases or contradictions. The host needs a contextual
+# rubric and an independent task for any understanding claim.
 
 _STOP = {
     "the","a","an","and","or","but","if","then","is","are","was","were","be","been","being",
@@ -36,6 +36,8 @@ def _key_terms(source: str, *, top: int = 40) -> dict[str, int]:
 
 
 def grade_explanation(explanation: str, source: str, *, threshold: float = 0.6) -> dict:
+    if not math.isfinite(threshold) or not 0 < threshold <= 1:
+        raise ValueError("coverage threshold must be in (0, 1]")
     key = _key_terms(source)
     if not key:
         return {"status": "no_source_terms", "coverage": 0.0, "missed": [], "covered": [],
@@ -47,19 +49,22 @@ def grade_explanation(explanation: str, source: str, *, threshold: float = 0.6) 
     unsupported = sorted({t for t in expl if t not in source_set})[:20]  # off-source (possible drift)
     coverage = round(len(covered) / len(key), 3)
     if coverage >= threshold:
-        outcome = "correct"
+        coverage_band = "sufficient"
     elif coverage >= threshold / 2:
-        outcome = "partial"
+        coverage_band = "partial"
     else:
-        outcome = "incorrect"
+        coverage_band = "low"
     return {
-        "status": "graded",
+        "status": "needs_semantic_review",
         "coverage": coverage,
         "key_terms": len(key),
         "covered": covered,
         "missed": missed,                 # <- "tell me what I missed"
         "unsupported": unsupported,       # terms you used that aren't in the source
-        "outcome": outcome,
+        "outcome": "unknown",
+        "coverage_band": coverage_band,
+        "correctness_checked": False,
+        "mastery_eligible": False,
         "method": "deterministic_term_coverage",
-        "note": "coverage is a floor, not deep understanding; a Socratic probe confirms real grasp",
+        "note": "Lexical overlap cannot establish correctness, detect negation, or judge paraphrases. Check reasoning against a rubric and use a fresh independent task.",
     }

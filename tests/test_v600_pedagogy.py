@@ -31,7 +31,7 @@ class BKTTests(unittest.TestCase):
     def test_mastery_met_with_transfer_and_breadth(self):
         obs = [_obs(True, 0, "independent_reproduction"), _obs(True, 2, "near_transfer"),
                _obs(True, 5, "near_transfer"), _obs(True, 9, "delayed_independent_performance")]
-        est = estimate("cap", obs)
+        est = estimate("cap", obs, now=datetime(2026, 1, 10, tzinfo=timezone.utc))
         self.assertTrue(est.mastered, msg=est.reasons)
 
     def test_forgetting_decays_over_long_gap(self):

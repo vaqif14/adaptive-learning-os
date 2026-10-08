@@ -20,7 +20,7 @@ LEDGER_SCHEMA_VERSION = 1
 
 def _record_hash(record: dict) -> str:
     body = {k: v for k, v in record.items() if k != "record_hash"}
-    canonical = json.dumps(body, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    canonical = json.dumps(body, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -33,12 +33,20 @@ class EventLedger:
     def append(self, record_type: str, payload: dict, provenance: dict | None = None) -> dict:
         if record_type not in ALLOWED_RECORD_TYPES:
             raise ValueError(f"unsupported record_type: {record_type}")
+        if not isinstance(payload, dict) or (provenance is not None and not isinstance(provenance, dict)):
+            raise ValueError("ledger payload and provenance must be objects")
+        # Reject non-JSON/non-finite values before touching persistent state.
+        json.dumps([payload, provenance], allow_nan=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "a+b") as f:
             if _HAVE_FCNTL:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
-                last = self._last_valid_record(f)
+                f.seek(0)
+                verified, report = self._scan(f.read())
+                if not report["chain_ok"]:
+                    raise ValueError("ledger integrity broken; preserve and repair the journal before recording new results")
+                last = verified[-1] if verified else None
                 seq = (last["seq"] + 1) if last else 0
                 prev_hash = last["record_hash"] if last else "genesis"
                 record = {
@@ -85,71 +93,56 @@ class EventLedger:
         out: list[dict] = []
         for line in self._iter_raw():
             try:
-                out.append(json.loads(line))
+                rec = json.loads(line)
+                if isinstance(rec, dict):
+                    out.append(rec)
             except json.JSONDecodeError:
                 continue  # quarantine; see integrity() for a full report
         return out
 
-    def _last_valid_record(self, f) -> dict | None:
-        f.seek(0)
-        data = f.read()
-        if not data:
-            return None
-        for chunk in reversed(data.split(b"\n")):
-            if not chunk.strip():
-                continue
+    def _scan(self, data: bytes):
+        """Verify shape, identity, sequence and hash together on one snapshot."""
+        verified, good, corrupt = [], 0, 0
+        prev, broken_at = "genesis", None
+        for i, line in enumerate(part for part in data.split(b"\n") if part.strip()):
             try:
-                return json.loads(chunk.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-        return None
+                rec = json.loads(line)
+                shape_ok = (isinstance(rec, dict)
+                    and isinstance(rec.get("payload"), dict)
+                    and isinstance(rec.get("provenance"), dict)
+                    and isinstance(rec.get("record_id"), str)
+                    and isinstance(rec.get("timestamp"), str)
+                    and rec.get("record_type") in ALLOWED_RECORD_TYPES
+                    and rec.get("schema_version") == LEDGER_SCHEMA_VERSION
+                    and type(rec.get("seq")) is int)
+                if not shape_ok:
+                    raise ValueError("invalid ledger record shape")
+                good += 1
+                valid = (rec["session_id"] == self.session_id and rec["seq"] == i
+                         and rec.get("prev_hash") == prev
+                         and rec.get("record_hash") == _record_hash(rec))
+                if not valid and broken_at is None:
+                    broken_at = i
+                if broken_at is None:
+                    verified.append(rec)
+                prev = rec.get("record_hash")
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                corrupt += 1
+                if broken_at is None:
+                    broken_at = i
+        return verified, {"records": good, "corrupt_lines": corrupt,
+                          "chain_ok": broken_at is None, "broken_at_line": broken_at}
+
+    def _snapshot(self):
+        return self.path.read_bytes() if self.path.exists() else b""
 
     def verified_records(self) -> list[dict]:
-        """Records whose hash chain is intact, up to the first break.
-
-        Consumers that make trust decisions (projection, mastery, review) must use
-        THIS, not records(): a record that still parses but was edited in place
-        (its stored hash no longer matches, or prev_hash diverges) is dropped along
-        with everything after it, so tampered evidence cannot drive mastery.
-        """
-        out: list[dict] = []
-        prev = "genesis"
-        for line in self._iter_raw():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                break  # torn/garbage line: stop trusting the tail
-            if rec.get("prev_hash") != prev or rec.get("record_hash") != _record_hash(rec):
-                break  # in-place edit or reordering: chain broken here
-            out.append(rec)
-            prev = rec.get("record_hash", prev)
-        return out
+        """Only the valid prefix of this session's journal may drive decisions."""
+        return self._scan(self._snapshot())[0]
 
     def integrity(self) -> dict:
-        """Verify the hash chain; report corrupt lines without raising."""
-        good = 0
-        corrupt = 0
-        chain_ok = True
-        broken_at = None
-        prev = "genesis"
-        for i, line in enumerate(self._iter_raw()):
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                corrupt += 1
-                chain_ok = False
-                if broken_at is None:
-                    broken_at = i
-                continue
-            good += 1
-            if rec.get("prev_hash") != prev or rec.get("record_hash") != _record_hash(rec):
-                chain_ok = False
-                if broken_at is None:
-                    broken_at = i
-            prev = rec.get("record_hash", prev)
-        return {
-            "records": good,
-            "corrupt_lines": corrupt,
-            "chain_ok": chain_ok and corrupt == 0,
-            "broken_at_line": broken_at,
-        }
+        return self._scan(self._snapshot())[1]
+
+    def require_integrity(self):
+        if not self.integrity()["chain_ok"]:
+            raise ValueError("ledger integrity broken; preserve and repair the journal before continuing")

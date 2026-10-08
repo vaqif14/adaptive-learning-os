@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,9 +29,15 @@ from runtime.challenge import ChallengeContext, choose_challenge_gate
 from runtime.coverage import CoverageCell, PracticeCoverage, choose_practice_variation
 from runtime.curriculum import CurriculumContext, curriculum_authority_gate
 from runtime.source_governance import SourceRecord, SourceRights, evaluate_source_use
+from runtime.source_epistemics import (
+    SourceCredibility, evaluate_source_trust, source_gate, VOLATILITY_CLASSES,
+)
 from runtime.accessibility import support_effect_on_independence
 from runtime.simulation import SimulationFidelity, cap_simulation_scope
-from runtime.governance import ToolRequest, authorize_tool
+from runtime.governance import ToolRequest, authorize_tool, SystemTrace
+from runtime.study_plan import StudyAvailability, plan_schedule
+from runtime.reach_cli import doctor as reach_doctor
+from runtime.roadmap_source import resolve_roadmap_source
 from runtime.source_scope import SourceScopePolicy, CoverageClaim, analyze_source_gaps, source_boundary_gate, hybrid_source_plan, behavior_for
 from runtime.safety import safe_input_path
 from runtime.evidence_bridge import apply_evidence_to_context, progress_flags
@@ -205,12 +212,19 @@ def cmd_route(args):
         high_stakes=args.high_stakes,
     )
     dec = route_message(args.message, ctx)
-    led = kernel(args).ledger(args.session)
+    k = kernel(args)
+    led = k.ledger(args.session)
     led.append("event", {"event_type": "user_message", "message": args.message}, {"source": "cli"})
     led.append("decision", {
         "decision_type": "route", "mode": dec.mode, "route": dec.route,
         "study_intent": dec.study_intent, "reasons": dec.reasons,
     }, {"source": "router"})
+    # Observability: every route emits a SystemTrace, so `alearn observability`
+    # reflects real traffic rather than only manually logged turns.
+    k.record_trace(args.session, SystemTrace(
+        trace_id=new_id("trace"), route=dec.route,
+        pedagogical_intent=dec.study_intent, policy_move=dec.mode,
+    ).to_dict())
     printj(dec.__dict__)
 
 
@@ -232,7 +246,11 @@ def cmd_evidence(args):
             "signal_weight": "weak",
             "authority": "context_only",
         }
-    semantics = normalize_evidence_semantics(args.evidence_format, args.strength, args.independence)
+    # Manual entry is a declaration, not a check: capped below strong so it can feed the
+    # learner model but never prove mastery. Strong comes only from verify-python,
+    # workspace-check or verify-exercise, which run substantive correctness checks.
+    semantics = normalize_evidence_semantics(args.evidence_format, args.strength, args.independence,
+                                             self_reported=True)
     payload = {
         "evidence_id": new_id("ev"),
         "capability_id": args.capability,
@@ -242,8 +260,10 @@ def cmd_evidence(args):
         "scope": args.scope,
         "evidence_format": semantics.evidence_format,
         "mastery_eligible": semantics.mastery_eligible,
+        "verification": "self_report",
         "format_semantics": {"requested_strength": semantics.requested_strength, "reasons": semantics.reasons},
         "support_provenance": support,
+        "attempt_id": args.attempt_id,
         "support_kind": args.support_kind,
         "context_signals": context_signals,
         "confidence_rating": getattr(args, "confidence", None),
@@ -392,67 +412,20 @@ def cmd_intents(args):
 
 
 def cmd_verify_python(args):
-    d = kernel(args).dir(args.session)
-    domain = read_json(d / "domain-context.json")
     code = args.code
     if args.code_file:
         code = safe_input_path(workspace(args), args.code_file).read_text(encoding="utf-8")
     if code is None:
         raise SystemExit("provide --code or --code-file")
     trusted = safe_input_path(workspace(args), args.trusted_test_file).read_text(encoding="utf-8") if args.trusted_test_file else None
-    result = VerifierRegistry.verify_python(
-        domain,
-        code,
-        expected_stdout=args.expected_stdout,
-        trusted_test_code=trusted,
+    # Single source of truth lives in SessionKernel.verify_python (shared with the HTTP API).
+    result = kernel(args).verify_python(
+        args.session, code,
+        capability=args.capability, independence=args.independence,
+        scope=args.scope, evidence_format=args.evidence_format,
+        expected_stdout=args.expected_stdout, trusted_test_code=trusted,
+        attempt_id=args.attempt_id, support_provenance=_attempt_support(args),
     )
-    if result.get("available"):
-        vr = result["result"]
-        executed = bool(vr.get("executed"))
-        checked = bool(vr.get("correctness_checked"))
-        # A run can only be STRONG evidence if the submission actually executed AND
-        # its correctness was independently checked (trusted test or expected stdout)
-        # AND it passed. Anything else is weak/unknown and never mastery-eligible:
-        # this is what stops `raise SystemExit(0)` or an unchecked print from being
-        # recorded as a strong unassisted success.
-        if not executed:
-            outcome = "unknown"          # refused/syntax-error/crash: not a performance signal
-            requested = "weak"
-        elif not checked:
-            outcome = "unknown"          # ran but nothing verified correctness
-            requested = "weak"
-        else:
-            outcome = "correct" if vr.get("passed") else "incorrect"
-            requested = "strong" if vr.get("passed") else "medium"
-        semantics = normalize_evidence_semantics(args.evidence_format, requested, args.independence)
-        mastery_eligible = semantics.mastery_eligible and outcome in {"correct", "incorrect"} and checked
-        payload = {
-            "evidence_id": new_id("ev"),
-            "capability_id": args.capability,
-            "outcome": outcome,
-            "independence": args.independence,
-            "strength": semantics.normalized_strength,
-            "scope": args.scope,
-            "evidence_format": semantics.evidence_format,
-            "mastery_eligible": mastery_eligible,
-            "correctness_checked": checked,
-            "format_semantics": {"requested_strength": semantics.requested_strength, "reasons": semantics.reasons},
-            "support_provenance": {},
-            "note": "deterministic_python_verifier",
-            "source_event_ids": [],
-            "verifier": {"id": result.get("verifier_id"), "result": vr},
-        }
-        # Only executed, correctness-checked runs are recorded as mastery evidence;
-        # unverifiable runs are logged as observations so the audit trail is complete
-        # without polluting the capability's evidence.
-        led = kernel(args).ledger(args.session)
-        if outcome == "unknown":
-            led.append("observation", {"capability_id": args.capability, "verifier": payload["verifier"],
-                                       "note": "verifier_ran_without_correctness_check" if executed else "verifier_refused_or_failed_to_execute"},
-                       {"source": "python_verifier"})
-        else:
-            led.append("evidence", payload, {"source": "python_verifier"})
-        kernel(args).rebuild_projection(args.session)
     printj(result)
 
 
@@ -523,6 +496,29 @@ def cmd_source_use(args):
         derived_from=args.derived_from or [], rights=rights,
     )
     printj(evaluate_source_use(source, args.operation).to_dict())
+
+
+def cmd_source_trust(args):
+    cred = SourceCredibility(
+        source_id=args.source_id,
+        source_type=args.source_type,
+        publication_date=args.publication_date,
+        last_verified=args.last_verified,
+        corroborating_source_count=args.corroborating_sources,
+        retracted=args.retracted,
+        derived_from=args.derived_from or [],
+    )
+    epistemic = evaluate_source_trust(cred, args.claim_volatility, as_of=args.as_of)
+    if args.operation:
+        rights = SourceRights(rights_status=args.rights_status)
+        source = SourceRecord(
+            source_id=args.source_id, uri=args.uri, source_type=args.source_type,
+            derived_from=args.derived_from or [], rights=rights,
+        )
+        rights_decision = evaluate_source_use(source, args.operation)
+        printj(source_gate(epistemic, rights_decision).to_dict())
+    else:
+        printj(epistemic.to_dict())
 
 
 def cmd_access_support(args):
@@ -630,7 +626,11 @@ def cmd_workspace_check(args):
         led.append("evidence", ev, {"source": "workspace_check", "module": args.module})
         kernel(args).rebuild_projection(args.session)
     elif result.get("status") == "checked":
-        led.append("observation", {"capability_id": args.module, "note": "workspace_check_ran_without_correctness_check"}, {"source": "workspace_check"})
+        led.append("observation", {
+            "capability_id": result.get("capability", args.module),
+            "attempt_id": result.get("attempt_id"), "support_provenance": result.get("support_provenance", {}),
+            "note": "workspace_check_ran_without_correctness_check",
+        }, {"source": "workspace_check"})
     printj(result)
 
 
@@ -692,14 +692,20 @@ def cmd_review_due(args):
             continue
         caps.setdefault(cap, [])
     per_cap = {cap: observations_from_projection_caps(records, cap) for cap in caps}
+    per_cap = {cap: obs for cap, obs in per_cap.items() if obs}
     printj({"review_queue": due_queue(per_cap)})
 
 
 def cmd_serve(args):
-    ui = Path(args.ui).resolve() if args.ui else (Path(__file__).resolve().parents[3] / "decks" / "academy.html")
+    # Default UI is the live split-screen workspace (talks to /api); academy.html
+    # (catalog demo) is still available via --ui.
+    ui = Path(args.ui).resolve() if args.ui else (Path(__file__).resolve().parents[3] / "decks" / "workspace.html")
+    # Local-first: with no token on loopback, run without auth (user runs it on
+    # their own machine). Binding beyond loopback without a token still refuses.
+    anon = args.allow_anon or not (args.token or os.environ.get("ADAPTIVE_API_TOKEN"))
     cfg = ServerConfig(host=args.host, port=args.port, token=args.token,
-                       allow_anon=args.allow_anon, ui_file=ui if ui.is_file() else None,
-                       prefer_backend=args.prefer)
+                       allow_anon=anon, ui_file=ui if ui.is_file() else None,
+                       prefer_backend=args.prefer, workspace=workspace(args))
     run_server(cfg)
 
 
@@ -707,28 +713,41 @@ def cmd_listener_check(args):
     expl = safe_input_path(workspace(args), args.explanation_file).read_text(encoding="utf-8")
     src = safe_input_path(workspace(args), args.source_file).read_text(encoding="utf-8")
     g = grade_explanation(expl, src, threshold=args.threshold)
-    if g["status"] == "graded" and g["outcome"] in {"correct","incorrect","partial"}:
-        requested = "strong" if g["outcome"] == "correct" else "medium"
-        sem = normalize_evidence_semantics("explanation", requested, args.independence)
-        payload = {"evidence_id": new_id("ev"), "capability_id": args.capability, "outcome": g["outcome"],
-                   "independence": args.independence, "strength": sem.normalized_strength, "scope": args.scope,
-                   "evidence_format": sem.evidence_format, "mastery_eligible": sem.mastery_eligible,
-                   "correctness_checked": True, "support_provenance": {}, "note": "listener_source_coverage",
-                   "coverage": g["coverage"], "source_event_ids": []}
-        led = kernel(args).ledger(args.session)
-        led.append("evidence", payload, {"source": "listener"})
-        kernel(args).rebuild_projection(args.session)
+    kernel(args).ledger(args.session).append("observation", {
+        "capability_id": args.capability, "verification": "term_coverage",
+        "outcome": "unknown", "correctness_checked": False, "mastery_eligible": False,
+        "coverage": g["coverage"], "assessment": g,
+        "note": "listener_source_coverage",
+    }, {"source": "listener"})
+    kernel(args).rebuild_projection(args.session)
     printj(g)
 
 
 def cmd_diagnose_history(args):
     sessions_dir = workspace(args) / ".learning" / "sessions"
-    printj(diagnose_history(sessions_dir, learner_id=args.learner_id))
+    printj(diagnose_history(sessions_dir, learner_id=args.learner_id, topic=args.topic))
+
+
+def cmd_rubric_check(args):
+    from runtime.rubric import assess_rubric
+    from runtime.evidence_history import merge_attempt_support
+    submission = safe_input_path(workspace(args), args.submission_file).read_text(encoding="utf-8")
+    rubric = json.loads(safe_input_path(workspace(args), args.rubric_file).read_text(encoding="utf-8"))
+    assessment = json.loads(safe_input_path(workspace(args), args.assessment_file).read_text(encoding="utf-8"))
+    result = assess_rubric(submission, rubric, assessment)
+    led = kernel(args).ledger(args.session)
+    support = merge_attempt_support(led.verified_records(), args.capability, args.attempt_id, _attempt_support(args))
+    led.append("evidence", {**result, "evidence_id": new_id("ev"), "capability_id": args.capability,
+        "evidence_format": "explanation", "mastery_eligible": True,
+        "scope": args.scope, "independence": args.independence, "attempt_id": args.attempt_id,
+        "support_provenance": support}, {"source": "rubric_assessment"})
+    kernel(args).rebuild_projection(args.session)
+    printj(result)
 
 
 def cmd_learner_state(args):
     sessions_dir = workspace(args) / ".learning" / "sessions"
-    printj(aggregate_learner_state(sessions_dir, learner_id=args.learner_id))
+    printj(aggregate_learner_state(sessions_dir, learner_id=args.learner_id, topic=args.topic))
 
 
 def cmd_project(args):
@@ -737,6 +756,112 @@ def cmd_project(args):
 
 def cmd_inspect(args):
     printj(kernel(args).inspect(args.session))
+
+
+def cmd_ledger_verify(args):
+    receipt = kernel(args).verify_ledger(
+        args.session, cadence_hours=args.cadence_hours, force=args.force,
+    )
+    printj(receipt)
+    if receipt.get("status") == "broken":
+        raise SystemExit(2)  # non-zero so a cron/CI integrity check fails loudly
+
+
+def cmd_trace(args):
+    trace = SystemTrace(
+        trace_id=new_id("trace"),
+        route=args.route,
+        pedagogical_intent=args.pedagogical_intent,
+        model_calls=args.model_calls,
+        tools_called=args.tool or [],
+        source_ids=args.source_id or [],
+        input_tokens=args.input_tokens,
+        output_tokens=args.output_tokens,
+        latency_ms=args.latency_ms,
+        verifier_result=args.verifier_result,
+        policy_move=args.policy_move,
+        failure=args.failure,
+        fallback=args.fallback,
+    )
+    kernel(args).record_trace(args.session, trace.to_dict())
+    printj(trace.to_dict())
+
+
+def cmd_observability(args):
+    printj(kernel(args).observability(args.session))
+
+
+def cmd_reach_doctor(args):
+    printj(reach_doctor())
+
+
+def cmd_verify_exercise(args):
+    code = args.code
+    if args.code_file:
+        code = safe_input_path(workspace(args), args.code_file).read_text(encoding="utf-8")
+    if code is None:
+        raise SystemExit("provide --code or --code-file")
+    printj(kernel(args).verify_exercise(
+        args.session, args.lang, code,
+        capability=args.capability, expected_stdout=args.expected_stdout,
+        independence=args.independence, scope=args.scope,
+        evidence_format=args.evidence_format, prefer_backend=args.prefer,
+        attempt_id=args.attempt_id, support_provenance=_attempt_support(args),
+    ))
+
+
+def cmd_roadmap_source(args):
+    printj(resolve_roadmap_source(args.topic, args.domain))
+
+
+def cmd_set_roadmap(args):
+    plan = json.loads(safe_input_path(workspace(args), args.roadmap_file).read_text(encoding="utf-8"))
+    printj(kernel(args).set_roadmap(args.session, plan))
+
+
+def cmd_next(args):
+    printj(kernel(args).next_action(args.session))
+
+
+def cmd_add_card(args):
+    printj(kernel(args).add_card(args.session, args.node, args.front, args.back))
+
+
+def cmd_scaffold_cards(args):
+    printj(kernel(args).scaffold_cards(args.session, args.node))
+
+
+def cmd_review_card(args):
+    correct = {"correct": True, "incorrect": False}[args.outcome]
+    printj(kernel(args).review_card(args.session, args.card, correct))
+
+
+def cmd_cards_due(args):
+    printj(kernel(args).cards_due(args.session))
+
+
+def cmd_study_plan(args):
+    if args.roadmap_file:
+        plan = json.loads(safe_input_path(workspace(args), args.roadmap_file).read_text(encoding="utf-8"))
+    elif args.session:
+        rj = kernel(args).dir(args.session) / "workspace" / "roadmap.json"
+        if not rj.exists():
+            raise SystemExit("this session has no roadmap workspace; pass --roadmap-file")
+        plan = read_json(rj)
+    else:
+        raise SystemExit("provide --session or --roadmap-file")
+    nodes = [n["id"] for n in plan.get("nodes", []) if isinstance(n, dict) and n.get("id")]
+    if not nodes:
+        raise SystemExit("roadmap has no nodes")
+    import datetime as _dt
+    start = args.start or _dt.date.today().isoformat()
+    avail = StudyAvailability(
+        days_per_week=args.days_per_week,
+        minutes_per_session=args.minutes,
+        preferred_days=args.preferred_day or [],
+    )
+    printj(plan_schedule(nodes, avail, start_date=start,
+                         minutes_per_node=args.minutes_per_node, deadline=args.deadline))
 
 
 def _add_contract_args(s):
@@ -757,6 +882,21 @@ def _add_contract_args(s):
     s.add_argument("--delegable-work", action="append")
     s.add_argument("--accessibility-need", action="append")
     s.add_argument("--authentic-environment-required", action="store_true")
+
+
+def _attempt_support(args):
+    return {"hints_count": args.hints_count,
+            "conceptual_scaffold": args.conceptual_scaffold,
+            "worked_example_shown": args.worked_example_shown,
+            "ai_direct_answer_revealed": args.ai_direct_answer_revealed}
+
+
+def _add_attempt_args(p):
+    p.add_argument("--attempt-id", help="stable ID for this task; use a new ID only for a genuinely fresh task")
+    p.add_argument("--hints-count", type=int, default=0)
+    p.add_argument("--conceptual-scaffold", action="store_true")
+    p.add_argument("--worked-example-shown", action="store_true")
+    p.add_argument("--ai-direct-answer-revealed", action="store_true")
 
 
 def parser():
@@ -814,10 +954,13 @@ def parser():
     e.add_argument("--capability", required=True)
     e.add_argument("--outcome", choices=["correct", "incorrect", "partial", "unknown"], required=True)
     e.add_argument("--independence", choices=["unassisted", "assisted", "unknown"], required=True)
-    e.add_argument("--strength", choices=["strong", "medium", "weak"], required=True)
+    e.add_argument("--strength", choices=["strong", "medium", "weak"], required=True,
+                   help="requested strength; manual entries are self-reports and are stored at most "
+                        "'medium' (strong needs verify-python, workspace-check or verify-exercise)")
     e.add_argument("--evidence-format", choices=FORMAT_CHOICES, default="unknown")
     e.add_argument("--scope", choices=SCOPE_CHOICES, default="supported_completion")
     e.add_argument("--note")
+    e.add_argument("--attempt-id")
     e.add_argument("--conceptual-scaffold", action="store_true")
     e.add_argument("--worked-example-shown", action="store_true")
     e.add_argument("--ai-direct-answer-revealed", action="store_true")
@@ -920,6 +1063,7 @@ def parser():
     vp.add_argument("--independence", choices=["unassisted", "assisted", "unknown"], default="unknown")
     vp.add_argument("--scope", choices=SCOPE_CHOICES, default="supported_completion")
     vp.add_argument("--evidence-format", choices=FORMAT_CHOICES, default="artifact_execution")
+    _add_attempt_args(vp)
     vp.set_defaults(func=cmd_verify_python)
 
     dg = sp.add_parser("delegation")
@@ -968,6 +1112,22 @@ def parser():
     su.add_argument("--deny", action="store_true")
     su.add_argument("--human-review", action="store_true")
     su.set_defaults(func=cmd_source_use)
+
+    st = sp.add_parser("source-trust", help="Epistemic Gate: can I trust this source? (+rights when --operation given)")
+    st.add_argument("--source-id", required=True)
+    st.add_argument("--uri")
+    st.add_argument("--source-type", default="unknown")
+    st.add_argument("--claim-volatility", choices=sorted(VOLATILITY_CLASSES), default="slow")
+    st.add_argument("--publication-date", help="ISO date the content is from, e.g. 2021-03-15")
+    st.add_argument("--last-verified", help="ISO date a human/runtime last re-checked it")
+    st.add_argument("--corroborating-sources", type=int, default=0)
+    st.add_argument("--retracted", action="store_true")
+    st.add_argument("--derived-from", action="append")
+    st.add_argument("--as-of", help="evaluate freshness as of this ISO date (default: now)")
+    st.add_argument("--operation", choices=["read","quote","summarize","transform","locally_index","retain","redistribute","fine_tune","train_model"],
+                    help="also run the Rights Gate and return the combined decision")
+    st.add_argument("--rights-status", default="unknown")
+    st.set_defaults(func=cmd_source_trust)
 
     ac = sp.add_parser("access-support")
     ac.add_argument("--support-kind", choices=["none","accessibility","pedagogical","cognitive_delegation"], required=True)
@@ -1063,11 +1223,75 @@ def parser():
     ms.add_argument("--capability", required=True)
     ms.set_defaults(func=cmd_mastery)
 
-    rd = sp.add_parser("review-due", help="spaced-review queue (half-life regression) for this session")
+    rd = sp.add_parser("review-due", help="spaced-review queue (due-time-aware spacing heuristic) for this session")
     rd.add_argument("--session", required=True)
     rd.set_defaults(func=cmd_review_due)
 
-    sv = sp.add_parser("serve", help="HTTP API + UI: /health, /api/languages, /api/run, /api/verify-fastapi (Bearer token; loopback by default)")
+    rch = sp.add_parser("reach-doctor", help="check optional Agent-Reach source backend (web/youtube/reddit/github...)")
+    rch.set_defaults(func=cmd_reach_doctor)
+
+    ve = sp.add_parser("verify-exercise", help="run ANY language via the execution backend and record evidence (multi-language mastery)")
+    ve.add_argument("--session", required=True)
+    ve.add_argument("--lang", required=True)
+    ve.add_argument("--code")
+    ve.add_argument("--code-file")
+    ve.add_argument("--expected-stdout", help="correctness check; without it the run is an observation, never strong")
+    ve.add_argument("--capability", default="exercise_behavior", help="use the roadmap node id for the agentic driver")
+    ve.add_argument("--independence", choices=["unassisted", "assisted", "unknown"], default="unknown")
+    ve.add_argument("--scope", choices=SCOPE_CHOICES, default="independent_reproduction")
+    ve.add_argument("--evidence-format", choices=FORMAT_CHOICES, default="artifact_execution")
+    ve.add_argument("--prefer", choices=["auto", "local", "container"])
+    _add_attempt_args(ve)
+    ve.set_defaults(func=cmd_verify_exercise)
+
+    rs = sp.add_parser("roadmap-source", help="resolve the AUTHORITATIVE roadmap backbone (roadmap.sh / expert research), independent of learner uploads")
+    rs.add_argument("--topic", required=True)
+    rs.add_argument("--domain", help="optional domain hint, e.g. programming")
+    rs.set_defaults(func=cmd_roadmap_source)
+
+    sr = sp.add_parser("set-roadmap", help="attach/replace the roadmap on an existing session (intake-first flow)")
+    sr.add_argument("--session", required=True)
+    sr.add_argument("--roadmap-file", required=True)
+    sr.set_defaults(func=cmd_set_roadmap)
+
+    nx = sp.add_parser("next", help="agentic driver: the single next step the OS wants the agent to take")
+    nx.add_argument("--session", required=True)
+    nx.set_defaults(func=cmd_next)
+
+    ac = sp.add_parser("add-card", help="add a memory card (agent-authored front/back)")
+    ac.add_argument("--session", required=True)
+    ac.add_argument("--node", required=True)
+    ac.add_argument("--front", required=True)
+    ac.add_argument("--back")
+    ac.set_defaults(func=cmd_add_card)
+
+    sc = sp.add_parser("scaffold-cards", help="generate card stubs from a roadmap node (any subject)")
+    sc.add_argument("--session", required=True)
+    sc.add_argument("--node", required=True)
+    sc.set_defaults(func=cmd_scaffold_cards)
+
+    rvc = sp.add_parser("review-card", help="record a card recall result; reschedules it")
+    rvc.add_argument("--session", required=True)
+    rvc.add_argument("--card", required=True)
+    rvc.add_argument("--outcome", choices=["correct", "incorrect"], required=True)
+    rvc.set_defaults(func=cmd_review_card)
+
+    cd = sp.add_parser("cards-due", help="memory cards due for review now")
+    cd.add_argument("--session", required=True)
+    cd.set_defaults(func=cmd_cards_due)
+
+    spn = sp.add_parser("study-plan", help="weekly study schedule from a roadmap (any subject)")
+    spn.add_argument("--session")
+    spn.add_argument("--roadmap-file", help="roadmap JSON with nodes[].id (else read the session's)")
+    spn.add_argument("--days-per-week", type=int, default=3)
+    spn.add_argument("--minutes", type=int, default=45, help="minutes per study session")
+    spn.add_argument("--minutes-per-node", type=int, default=30)
+    spn.add_argument("--preferred-day", type=int, action="append", help="0=Mon..6=Sun; repeatable")
+    spn.add_argument("--start", help="ISO start date (default: today)")
+    spn.add_argument("--deadline", help="ISO deadline; flags feasibility")
+    spn.set_defaults(func=cmd_study_plan)
+
+    sv = sp.add_parser("serve", help="HTTP API + split-screen web workspace: session/route/verify/inspect/observability + run (loopback runs auth-free; token needed off-loopback)")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8777)
     sv.add_argument("--token", help="API token (default: ADAPTIVE_API_TOKEN env)")
@@ -1076,7 +1300,7 @@ def parser():
     sv.add_argument("--prefer", choices=["auto","local","container"])
     sv.set_defaults(func=cmd_serve)
 
-    lc = sp.add_parser("listener-check", help="Listener: grade a learner explanation against a source, report what was missed")
+    lc = sp.add_parser("listener-check", help="Listener: report lexical coverage; semantic correctness requires review")
     lc.add_argument("--session", required=True)
     lc.add_argument("--capability", required=True)
     lc.add_argument("--explanation-file", required=True)
@@ -1086,17 +1310,57 @@ def parser():
     lc.add_argument("--independence", choices=["unassisted","assisted"], default="unassisted")
     lc.set_defaults(func=cmd_listener_check)
 
+    rb = sp.add_parser("rubric-check", help="validate attributed criterion scores bound to a submission; no automatic mastery")
+    rb.add_argument("--session", required=True)
+    rb.add_argument("--capability", required=True)
+    rb.add_argument("--submission-file", required=True)
+    rb.add_argument("--rubric-file", required=True)
+    rb.add_argument("--assessment-file", required=True)
+    rb.add_argument("--scope", choices=SCOPE_CHOICES, default="independent_reproduction")
+    rb.add_argument("--independence", choices=["unassisted", "assisted", "unknown"], default="unknown")
+    _add_attempt_args(rb)
+    rb.set_defaults(func=cmd_rubric_check)
+
     dh = sp.add_parser("diagnose-history", help="Diagnostician: recurring root problems across a learner's sessions")
     dh.add_argument("--learner-id")
+    dh.add_argument("--topic", help="required when the learner has sessions in multiple topics")
     dh.set_defaults(func=cmd_diagnose_history)
 
     ls = sp.add_parser("learner-state", help="aggregate capability state across all sessions (optionally one learner)")
     ls.add_argument("--learner-id")
+    ls.add_argument("--topic", help="required when the learner has sessions in multiple topics")
     ls.set_defaults(func=cmd_learner_state)
 
     pr = sp.add_parser("project")
     pr.add_argument("--session", required=True)
     pr.set_defaults(func=cmd_project)
+
+    lv = sp.add_parser("ledger-verify", help="verify the ledger hash chain; write a dated integrity receipt (exit 2 if broken)")
+    lv.add_argument("--session", required=True)
+    lv.add_argument("--cadence-hours", type=float, default=None,
+                    help="skip (status=skipped) if a receipt newer than this many hours exists")
+    lv.add_argument("--force", action="store_true", help="verify even if within cadence")
+    lv.set_defaults(func=cmd_ledger_verify)
+
+    tr = sp.add_parser("trace", help="record a SystemTrace of one turn for observability")
+    tr.add_argument("--session", required=True)
+    tr.add_argument("--route", required=True)
+    tr.add_argument("--pedagogical-intent")
+    tr.add_argument("--model-calls", type=int, default=0)
+    tr.add_argument("--tool", action="append")
+    tr.add_argument("--source-id", action="append")
+    tr.add_argument("--input-tokens", type=int)
+    tr.add_argument("--output-tokens", type=int)
+    tr.add_argument("--latency-ms", type=int)
+    tr.add_argument("--verifier-result")
+    tr.add_argument("--policy-move")
+    tr.add_argument("--failure")
+    tr.add_argument("--fallback")
+    tr.set_defaults(func=cmd_trace)
+
+    ob = sp.add_parser("observability", help="aggregate this session's SystemTraces")
+    ob.add_argument("--session", required=True)
+    ob.set_defaults(func=cmd_observability)
 
     ins = sp.add_parser("inspect")
     ins.add_argument("--session", required=True)
