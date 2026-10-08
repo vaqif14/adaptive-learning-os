@@ -4,8 +4,40 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import os
+import signal
+import subprocess
 import tempfile
 import uuid
+
+
+def run_capped(cmd, *, timeout, input=None, **popen_kwargs):
+    """Like subprocess.run, but on timeout it kills the whole process GROUP.
+
+    `subprocess.run(timeout=...)` only kills the direct child, so a learner's code
+    that spawns grandchildren (e.g. `Popen(['sleep', ...])`) leaves them running
+    until they exhaust pids_limit. On POSIX we put the child in a new session and
+    `killpg` the group on timeout; elsewhere we fall back to plain run.
+    Raises subprocess.TimeoutExpired (with captured output) exactly like run().
+    """
+    if os.name != "posix":
+        return subprocess.run(cmd, timeout=timeout, input=input, **popen_kwargs)
+    popen_kwargs.setdefault("start_new_session", True)
+    if input is not None:
+        popen_kwargs["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        out, err = proc.communicate(input=input, timeout=timeout)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out, err = None, None
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
 
 # File permissions: learner records may hold stated background / accessibility
 # needs, so keep them owner-only.

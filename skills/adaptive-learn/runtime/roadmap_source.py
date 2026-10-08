@@ -28,6 +28,7 @@ ROADMAP_SH_SLUGS: dict[str, str] = {
     "react": "react", "vue": "vue", "angular": "angular", "node": "nodejs", "nodejs": "nodejs",
     "android": "android", "ios": "ios", "flutter": "flutter", "kotlin": "android", "swift": "ios",
     "go": "golang", "golang": "golang", "rust": "rust", "c++": "cpp", "cpp": "cpp",
+    "csharp": "aspnet-core", "c#": "aspnet-core", "dotnet": "aspnet-core", ".net": "aspnet-core",
     "sql": "sql", "postgres": "postgresql", "postgresql": "postgresql",
     "docker": "docker", "kubernetes": "kubernetes", "k8s": "kubernetes",
     "system design": "system-design", "data structures": "datastructures-and-algorithms",
@@ -42,14 +43,23 @@ ROADMAP_SH_SLUGS: dict[str, str] = {
 }
 
 PROGRAMMING_DOMAINS = {"programming", "software", "tech", "coding", "development", "cs", "computer science"}
-# Lightweight signal that a free-text topic is a programming one.
-_PROGRAMMING_SIGNALS = set(ROADMAP_SH_SLUGS) | {
+# Bare tokens that are ALSO ordinary words: they must NOT by themselves route a
+# free-text topic to programming ("Game theory", "AI ethics", "Taylor Swift",
+# "Go the board game", "Spring in Vienna"). They still map to a slug once the
+# topic is already known to be programming (explicit --domain or another signal).
+_AMBIGUOUS_SIGNALS = {"ai", "go", "web", "game", "node", "swift", "spring", "c", "r"}
+# Auto-detect only on UNAMBIGUOUS signals (language/tool names + clear words).
+_PROGRAMMING_SIGNALS = (set(ROADMAP_SH_SLUGS) | {
     "code", "coding", "programming", "developer", "software", "api", "database", "framework",
-}
+}) - _AMBIGUOUS_SIGNALS
 
 
 def _norm(text: str) -> str:
-    return unicodedata.normalize("NFKC", text or "").casefold().strip()
+    t = unicodedata.normalize("NFKC", text or "").casefold().strip()
+    # Preserve language names that _tokens() would otherwise shred on + / #.
+    for raw, slug in (("c++", " cpp "), ("c#", " csharp "), ("f#", " fsharp ")):
+        t = t.replace(raw, slug)
+    return t
 
 
 def _tokens(topic_n: str) -> set[str]:

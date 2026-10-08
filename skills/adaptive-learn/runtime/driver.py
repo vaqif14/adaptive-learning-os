@@ -69,7 +69,7 @@ def next_action(
                 "node": n["id"], "title": n.get("title"),
                 "reason": "repeated_failures_require_new_representation" if failures >= 3 else "correct_the_observed_error_before_retry",
                 "attempts_without_progress": failures,
-                "instruction": "Give specific feedback; change the example or revisit a prerequisite when stuck. Then use a fresh, smaller task and record all support.",
+                "instruction": "Give specific feedback; change the example or revisit a prerequisite when stuck. Then use a fresh, smaller task recorded with a NEW --attempt-id (so earlier assisted attempts don't carry hints onto it) and record all support.",
                 "then": "verify",
             }).to_dict()
 
@@ -106,14 +106,17 @@ def next_action(
         return NextAction("verify", {
             "node": nid, "title": n.get("title"),
             "reason": "attempted_but_not_yet_mastered",
-            "instruction": "Use a fresh independent task recorded with capability=node_id. For code use verify-python or verify-exercise. For other work obtain a context-specific assessment; listener-check only reports lexical coverage and cannot certify correctness. Record support and do not claim mastery when a verifier is unavailable.",
+            "instruction": "Use a fresh independent task with a NEW --attempt-id, recorded with capability=node_id. For code use verify-python or verify-exercise. For non-executable work, a qualified assessor advances the node with `alearn attest` (counts for progress, never mastery); listener-check only reports lexical coverage and cannot certify correctness. Record support and do not claim mastery when a verifier is unavailable.",
         }).to_dict()
 
     # Progress through lessons is not course mastery. Seek remaining transfer /
     # retention evidence explicitly instead of claiming completion after one pass.
     for n in nodes:
         st = node_status.get(n["id"], {})
-        if not st.get("mastered"):
+        # A qualified-assessor-attested node has advanced as far as a non-executable
+        # node can; it has no deeper runtime-verifiable mastery to consolidate, so it
+        # counts as done for course completion (it is never marked BKT-mastered).
+        if not st.get("mastered") and not st.get("attested"):
             earliest = parse_time(st.get("review_not_before"))
             if st.get("evidence_target") == "delayed_independent_performance" and earliest and now < earliest:
                 return NextAction("wait_for_review", {

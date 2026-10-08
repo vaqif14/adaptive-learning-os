@@ -54,3 +54,18 @@ def test_empty_topic_raises():
 def test_agent_reach_is_a_fetch_option():
     r = resolve_roadmap_source("Learn SQL")
     assert "agent-reach" in r["fetch_via"]
+
+
+def test_cpp_and_csharp_recognized():
+    assert resolve_roadmap_source("Learn C++")["slug"] == "cpp"
+    assert resolve_roadmap_source("C# for web APIs")["slug"] == "aspnet-core"
+
+
+def test_ambiguous_words_do_not_misroute_to_programming():
+    for t in ["Game theory", "AI ethics and policy", "Taylor Swift lyrics", "Go the board game"]:
+        assert resolve_roadmap_source(t)["authority"] == "expert_research", t
+
+
+def test_unambiguous_programming_still_detected():
+    assert resolve_roadmap_source("Learn Python")["authority"] == "roadmap.sh"
+    assert resolve_roadmap_source("Go programming language")["slug"] == "golang"

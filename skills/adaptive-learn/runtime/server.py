@@ -49,6 +49,8 @@ class ServerConfig:
             raise ValueError("binding beyond loopback requires a token (set ADAPTIVE_API_TOKEN)")
         if not self.token and not self.allow_anon:
             raise ValueError("no token configured: set ADAPTIVE_API_TOKEN or pass allow_anon for loopback-only use")
+        if self.token is not None and (len(self.token) < 24 or self.token == "change-me-to-a-long-random-token"):
+            raise ValueError("ADAPTIVE_API_TOKEN too weak: use >=24 random chars, e.g. `openssl rand -base64 36`")
 
 
 def _handler(cfg: ServerConfig):
@@ -108,7 +110,10 @@ def _handler(cfg: ServerConfig):
             auth = self.headers.get("Authorization", "")
             if not auth.startswith("Bearer "):
                 return False
-            return hmac.compare_digest(auth[7:].strip(), cfg.token)
+            # Compare bytes: a non-ASCII Authorization header must fail closed, not
+            # raise TypeError in compare_digest and drop the connection.
+            return hmac.compare_digest(auth[7:].strip().encode("utf-8", "ignore"),
+                                       cfg.token.encode("utf-8"))
 
         def _body(self):
             if self.headers.get("Transfer-Encoding"):
@@ -138,8 +143,9 @@ def _handler(cfg: ServerConfig):
                 if not isinstance(data, dict):
                     return None, (400, {"error": "json_object_required"})
                 return data, None
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                return None, (400, {"error": "invalid_json", "detail": str(e)[:200]})
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError) as e:
+                # ValueError: huge-integer literals; RecursionError: deeply nested JSON.
+                return None, (400, {"error": "invalid_json", "detail": type(e).__name__})
 
         def log_message(self, fmt, *args):  # no request bodies / tokens in logs
             pass

@@ -854,6 +854,11 @@ def cmd_set_roadmap(args):
     printj(kernel(args).set_roadmap(args.session, plan))
 
 
+def cmd_attest(args):
+    printj(kernel(args).attest(args.session, args.node, outcome=args.outcome,
+                               assessor=args.assessor, note=args.note))
+
+
 def cmd_next(args):
     printj(kernel(args).next_action(args.session))
 
@@ -1307,6 +1312,14 @@ def parser():
     sr.add_argument("--session", required=True)
     sr.add_argument("--roadmap-file", required=True)
     sr.set_defaults(func=cmd_set_roadmap)
+
+    at = sp.add_parser("attest", help="qualified-assessor judgment for a non-executable node (advances it, never mastery)")
+    at.add_argument("--session", required=True)
+    at.add_argument("--node", required=True, help="roadmap node id (= capability id)")
+    at.add_argument("--outcome", choices=["pass", "fail"], default="pass")
+    at.add_argument("--assessor", help="who attested (human/qualified grader id)")
+    at.add_argument("--note")
+    at.set_defaults(func=cmd_attest)
 
     nx = sp.add_parser("next", help="agentic driver: the single next step the OS wants the agent to take")
     nx.add_argument("--session", required=True)

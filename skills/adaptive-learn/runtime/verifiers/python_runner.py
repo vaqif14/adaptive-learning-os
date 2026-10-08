@@ -9,6 +9,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+
+from ..utils import run_capped
 from typing import Iterable
 
 
@@ -274,7 +276,7 @@ class PythonVerifier:
             result_file = tdp / _SENTINEL_RESULT
             posix = os.name == "posix"
             try:
-                proc = subprocess.run(
+                proc = run_capped(
                     [sys.executable, "-I", "-S", str(tdp / "harness.py"),
                      str(tdp / "config.json"), str(result_file)],
                     cwd=td,

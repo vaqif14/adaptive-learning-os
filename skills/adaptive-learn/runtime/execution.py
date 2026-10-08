@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 
+from .utils import run_capped
+
 # Language-agnostic execution backends.
 #
 # A learner may want Python, Go, Kotlin, Rust, JavaScript, SQL — anything. The
@@ -144,7 +146,7 @@ class LocalToolchainBackend:
             last = None
             for cmd in spec.materialize(is_container=False):
                 try:
-                    last = subprocess.run(
+                    last = run_capped(
                         cmd, cwd=td,
                         env={"PATH": os.environ.get("PATH", ""),
                              # keep real HOME so language user-site/toolchains resolve

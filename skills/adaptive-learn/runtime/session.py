@@ -283,8 +283,12 @@ class SessionKernel:
         self.ledger(session_id).require_integrity()
         from .memory_cards import scaffold_from_node
         node = self._roadmap_node(session_id, node_id)
-        made = [c.to_dict() for c in scaffold_from_node(node)]
         cards = self._load_cards(session_id)
+        # Idempotent: re-scaffolding a node must not create duplicate due cards.
+        existing = {(c.get("node_id"), c.get("front")) for c in cards}
+        made = [c.to_dict() for c in scaffold_from_node(node) if (c.node_id, c.front) not in existing]
+        if not made:
+            return []
         cards.extend(made)
         commit_state(self.dir(session_id), self.ledger(session_id),
             {"event_type": "cards_scaffolded", "node_id": node_id, "count": len(made)}, {"cards.json": cards})
@@ -374,6 +378,7 @@ class SessionKernel:
 
         records = self.ledger(session_id).verified_records()
         assessment_pending = {}
+        attested_pass = set()   # nodes a qualified assessor judged correct (advance-only)
         for r in records:
             e = r.get("payload", {})
             cap_id = e.get("capability_id")
@@ -383,6 +388,8 @@ class SessionKernel:
                 assessment_pending[cap_id] = True
             elif r["record_type"] == "evidence" and e.get("outcome") in {"correct", "incorrect", "partial"}:
                 assessment_pending[cap_id] = False
+            if r["record_type"] == "evidence" and e.get("qualified_judgment") and e.get("outcome") == "correct":
+                attested_pass.add(cap_id)
         # Cached projections are outputs, never authority for an advance decision.
         proj = EvidenceProjector(self.ledger(session_id)).rebuild()
         caps = proj["demonstrated_capabilities"]
@@ -408,7 +415,9 @@ class SessionKernel:
             last_time = parse_time(cap.get("last_observed_at"))
             node_status[nid] = {
                 "mastered": mastery.mastered and not uncertain,
-                "ready_to_advance": int(cap.get("strong_unassisted_successes", 0)) >= 1 and not uncertain,
+                "attested": nid in attested_pass,
+                "ready_to_advance": (int(cap.get("strong_unassisted_successes", 0)) >= 1 and not uncertain)
+                                    or nid in attested_pass,
                 "evidence_count": int(cap.get("evidence_count", 0)),
                 "strong_unassisted_successes": int(cap.get("strong_unassisted_successes", 0)),
                 "consecutive_failures": cap.get("consecutive_failures", 0),
@@ -418,7 +427,18 @@ class SessionKernel:
                 "review_not_before": (last_time + timedelta(days=1)).isoformat() if last_time else None,
             }
 
-        due_reviews = [s for s in due_queue(evidence_caps) if s.get("due")]
+        # Spaced review is for RETAINING a capability already learned on the roadmap,
+        # so it is scheduled only for node-id capabilities that have earned at least
+        # one strong success. This keeps a never-mastered node (e.g. a non-code node
+        # with self-report only) or an orphan capability (a mis-set --capability like
+        # "python_artifact_behavior", or a node dropped by set-roadmap) from parking
+        # in the due queue and starving teach/verify forever.
+        node_ids = {n["id"] for n in nodes}
+        review_caps = {
+            cap: obs for cap, obs in evidence_caps.items()
+            if cap in node_ids and int((caps.get(cap) or {}).get("strong_unassisted_successes", 0)) >= 1
+        }
+        due_reviews = [s for s in due_queue(review_caps) if s.get("due")]
         reviews_due = len(due_reviews)
         cards = self.cards_due(session_id)
 
@@ -430,6 +450,38 @@ class SessionKernel:
         if decision["action"] == "review_capability":
             decision["reviews"] = due_reviews
         return decision
+
+    @locked_session
+    def attest(self, session_id: str, node_id: str, *, outcome: str = "pass",
+               assessor: str | None = None, note: str | None = None) -> dict:
+        """Qualified-assessor attestation for a NON-executable node.
+
+        Lets a node that has no runtime verifier (history, language, design...)
+        advance when a qualified assessor judges the learner's work correct. It is
+        recorded as evidence with ``qualified_judgment: true`` but strength ``medium``
+        and ``mastery_eligible: false`` — so it clears the advance gate and never
+        counts as strong/mastery (``counts_as_strong`` rejects non-strong). This is
+        the deliberate human channel for subjects a deterministic verifier can't score.
+        """
+        self.ledger(session_id).require_integrity()
+        correct = outcome == "pass"
+        self.ledger(session_id).append("evidence", {
+            "evidence_id": new_id("ev"),
+            "capability_id": node_id,
+            "outcome": "correct" if correct else "incorrect",
+            "independence": "assessed",
+            "strength": "medium",
+            "scope": "assessor_attested",
+            "evidence_format": "assessor_judgment",
+            "mastery_eligible": False,
+            "qualified_judgment": True,
+            "assessor": assessor,
+            "verification": "assessor_attested",
+            "support_provenance": {},
+            "note": note or "qualified assessor attestation (advancement only, not mastery)",
+        }, {"source": "assessor_attested"})
+        self.rebuild_projection(session_id)
+        return {"node": node_id, "advanced": correct, "counts_as_mastery": False}
 
     @locked_session
     def verify_exercise(self, session_id: str, lang: str, code: str, *,
