@@ -46,14 +46,24 @@ def write_json(path: Path, obj) -> None:
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
+            f.write(json.dumps(obj, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
         _chmod(path, _FILE_MODE)
+        fsync_directory(path.parent)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def fsync_directory(path: Path) -> None:
+    """Persist directory entries after an atomic rename on supported local OSes."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

@@ -134,7 +134,10 @@ def _handler(cfg: ServerConfig):
                 return None, (413, {"error": "body_too_large", "max_bytes": MAX_BODY})
             raw = self.rfile.read(n)
             try:
-                return json.loads(raw.decode("utf-8")), None
+                data = json.loads(raw.decode("utf-8"))
+                if not isinstance(data, dict):
+                    return None, (400, {"error": "json_object_required"})
+                return data, None
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 return None, (400, {"error": "invalid_json", "detail": str(e)[:200]})
 
@@ -191,6 +194,8 @@ def _handler(cfg: ServerConfig):
                                         "max_concurrent": cfg.max_concurrent_runs})
             try:
                 return self._dispatch(data)
+            except (ValueError, TypeError, KeyError) as exc:
+                return self._send(400, {"error": "invalid_request", "detail": str(exc)[:200]})
             finally:
                 run_slots.release()
 

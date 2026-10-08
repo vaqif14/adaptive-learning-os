@@ -140,10 +140,13 @@ def learner_history(sessions_dir, learner_id=None, *, topic=None):
     from pathlib import Path
     from .utils import read_json
     from .ledger import EventLedger
+    from .safety import valid_session_id
     root = Path(sessions_dir)
     sessions = []
     if root.exists():
         for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+            if not valid_session_id(directory.name):
+                continue
             if not (directory / "ledger.jsonl").exists():
                 continue
             metadata = read_json(directory / "session.json")

@@ -2,6 +2,13 @@
 
 A **thin-kernel, evidence-first, domain-sensitive learning runtime** for Codex/agent workflows.
 
+For local macOS/Linux use: `alearn local-doctor` checks storage and session integrity.
+`backup-session` / `restore-session` preserve and recover sessions;
+`assessment-request` prepares semantic review for the host agent, and `calibrate`
+evaluates real checked trials without altering mastery gates. See the
+[local operations guide](skills/adaptive-learn/references/local-operations.md)
+for the supported scope, recovery drill and assessment limits.
+
 This release integrates the full design line developed through v5.x without turning the kernel into a monolithic tutor. The kernel remains small; richer behavior lives in contracts, adapters, gates, verifiers, registries, and auditable evidence.
 
 ## Product thesis

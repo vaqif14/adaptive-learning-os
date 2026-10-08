@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Local Codex/agent operational gaps
+- Serialize session operations across threads/processes and ledger readers/writers. Persist directory entries after atomic writes; fail rather than silently continue without POSIX locking.
+- Make cards, contracts, notebook bindings and roadmap replacement journal-first, with recovery of committed JSON views after process death. Prepare roadmaps before installation and preserve prior learner work. Refuse to recreate missing session journals.
+- Add `backup-session`, `restore-session` and `local-doctor`: bounded checksum archives, path/symlink validation, no overwrite, journal checks, relocated workspace paths and installation/storage health checks.
+- Add source-grounded `assessment-request` for the existing host agent, rubric hash binding and artifact replay detection. Assessor judgments remain medium evidence; no automatic semantic mastery claim.
+- Add offline `calibrate` with first-trial quality filtering, chronological training/holdout split, candidate/default log loss and Brier scores, dataset provenance and explicit insufficient-data results. Active heuristic defaults and mastery thresholds are unchanged.
+- Cover concurrent processes, abrupt writer death, interrupted state/workspace commits, backup corruption/traversal, notebook continuity and holdout isolation. Replace CI's masked wheel check with a real installed-package session/cards/backup/restore smoke test. Reject non-object and malformed local HTTP requests with 400.
+
 ### Hosted deploy (Docker + Caddy)
 - Added a standalone hosted-deploy setup for "IT Innovations · Adaptive Learning": `Dockerfile` (zero-dep image: `pip install .`, non-root, healthcheck, serves the API + `decks/workspace.html` UI), `.dockerignore`, and `deploy/` (docker-compose with the app behind Caddy auto-HTTPS, `.env.example`, `Caddyfile` for `adaptive.itinnovations.az`, and a deploy README). The public bind is fail-closed — the container refuses to start without `ADAPTIVE_API_TOKEN`; Caddy terminates TLS and reverse-proxies to the internal app; the ledger persists in a named volume. Build + run verified (health open, `/api` 401 without token / 200 with token, UI served). Deploy README documents the untrusted-code-execution caveat (enable container/microVM isolation for public multi-user use).
 

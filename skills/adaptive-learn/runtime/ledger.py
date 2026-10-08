@@ -6,7 +6,8 @@ import hashlib
 import json
 import os
 
-from .utils import now_iso, new_id
+from .utils import now_iso, new_id, fsync_directory
+from .session_lock import session_lock
 
 try:
     import fcntl  # POSIX advisory locking (macOS/Linux)
@@ -31,6 +32,10 @@ class EventLedger:
 
     # --- append ----------------------------------------------------------
     def append(self, record_type: str, payload: dict, provenance: dict | None = None) -> dict:
+        with session_lock(self.path.parent):
+            return self._append(record_type, payload, provenance)
+
+    def _append(self, record_type: str, payload: dict, provenance: dict | None = None) -> dict:
         if record_type not in ALLOWED_RECORD_TYPES:
             raise ValueError(f"unsupported record_type: {record_type}")
         if not isinstance(payload, dict) or (provenance is not None and not isinstance(provenance, dict)):
@@ -38,7 +43,8 @@ class EventLedger:
         # Reject non-JSON/non-finite values before touching persistent state.
         json.dumps([payload, provenance], allow_nan=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "a+b") as f:
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a+b") as f:
             if _HAVE_FCNTL:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
@@ -76,6 +82,7 @@ class EventLedger:
             finally:
                 if _HAVE_FCNTL:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        fsync_directory(self.path.parent)
         return record
 
     # --- read ------------------------------------------------------------
@@ -134,7 +141,8 @@ class EventLedger:
                           "chain_ok": broken_at is None, "broken_at_line": broken_at}
 
     def _snapshot(self):
-        return self.path.read_bytes() if self.path.exists() else b""
+        with session_lock(self.path.parent):
+            return self.path.read_bytes() if self.path.exists() else b""
 
     def verified_records(self) -> list[dict]:
         """Only the valid prefix of this session's journal may drive decisions."""

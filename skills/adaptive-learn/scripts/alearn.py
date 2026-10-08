@@ -731,19 +731,53 @@ def cmd_diagnose_history(args):
 
 def cmd_rubric_check(args):
     from runtime.rubric import assess_rubric
-    from runtime.evidence_history import merge_attempt_support
+    from runtime.evidence_history import merge_attempt_support, execution_fingerprint
     submission = safe_input_path(workspace(args), args.submission_file).read_text(encoding="utf-8")
     rubric = json.loads(safe_input_path(workspace(args), args.rubric_file).read_text(encoding="utf-8"))
     assessment = json.loads(safe_input_path(workspace(args), args.assessment_file).read_text(encoding="utf-8"))
     result = assess_rubric(submission, rubric, assessment)
     led = kernel(args).ledger(args.session)
-    support = merge_attempt_support(led.verified_records(), args.capability, args.attempt_id, _attempt_support(args))
+    fingerprint = execution_fingerprint(args.capability, submission, rubric)
+    support = merge_attempt_support(led.verified_records(), args.capability, args.attempt_id, _attempt_support(args), fingerprint=fingerprint)
     led.append("evidence", {**result, "evidence_id": new_id("ev"), "capability_id": args.capability,
         "evidence_format": "explanation", "mastery_eligible": True,
         "scope": args.scope, "independence": args.independence, "attempt_id": args.attempt_id,
-        "support_provenance": support}, {"source": "rubric_assessment"})
+        "support_provenance": support, "task_fingerprint": fingerprint}, {"source": "rubric_assessment"})
     kernel(args).rebuild_projection(args.session)
     printj(result)
+
+
+def cmd_assessment_request(args):
+    from runtime.rubric import assessment_request
+    submission = safe_input_path(workspace(args), args.submission_file).read_text(encoding="utf-8")
+    rubric = json.loads(safe_input_path(workspace(args), args.rubric_file).read_text(encoding="utf-8"))
+    source = safe_input_path(workspace(args), args.source_file).read_text(encoding="utf-8")
+    printj(assessment_request(submission, rubric, source))
+
+
+def cmd_backup_session(args):
+    from runtime.backup import backup_session
+    printj(backup_session(kernel(args), args.session, safe_input_path(workspace(args), args.output, must_exist=False)))
+
+
+def cmd_restore_session(args):
+    from runtime.backup import restore_session, MAX_BYTES
+    printj(restore_session(kernel(args), safe_input_path(workspace(args), args.backup_file, max_bytes=MAX_BYTES * 2)))
+
+
+def cmd_calibrate(args):
+    from runtime.calibration import calibrate
+    from runtime.evidence_history import learner_history
+    _, records = learner_history(kernel(args).sessions_dir, args.learner_id, topic=args.topic)
+    printj(calibrate(records))
+
+
+def cmd_local_doctor(args):
+    from runtime.local_doctor import diagnose_local
+    result = diagnose_local(kernel(args))
+    printj(result)
+    if result["status"] != "ok":
+        raise SystemExit(2)
 
 
 def cmd_learner_state(args):
@@ -905,6 +939,25 @@ def parser():
     p.add_argument("--version", action="version", version="adaptive-learning-os 0.6.0")
     p.add_argument("--workspace", default=".")
     sp = p.add_subparsers(dest="cmd", required=True)
+
+    doctor = sp.add_parser("local-doctor", help="check local storage, session integrity and packaged assets")
+    doctor.set_defaults(func=cmd_local_doctor)
+    backup = sp.add_parser("backup-session", help="create a bounded verified session archive without overwriting")
+    backup.add_argument("--session", required=True)
+    backup.add_argument("--output", required=True, help="archive path within workspace, outside session")
+    backup.set_defaults(func=cmd_backup_session)
+    restore = sp.add_parser("restore-session", help="restore a verified backup into an absent session")
+    restore.add_argument("--backup-file", required=True, help="archive within destination workspace")
+    restore.set_defaults(func=cmd_restore_session)
+    calibration = sp.add_parser("calibrate", help="offline temporal BKT evaluation; does not change active parameters")
+    calibration.add_argument("--learner-id")
+    calibration.add_argument("--topic")
+    calibration.set_defaults(func=cmd_calibrate)
+    assessment = sp.add_parser("assessment-request", help="prepare a source-grounded rubric task for the local host agent")
+    assessment.add_argument("--submission-file", required=True)
+    assessment.add_argument("--rubric-file", required=True)
+    assessment.add_argument("--source-file", required=True)
+    assessment.set_defaults(func=cmd_assessment_request)
 
     s = sp.add_parser("start")
     s.add_argument("--topic", required=True)
@@ -1380,7 +1433,14 @@ def main(argv=None) -> int:
     from runtime.safety import UnsafePathError
     args = parser().parse_args(argv)
     try:
-        args.func(args)
+        if getattr(args, "session", None):
+            from runtime.session_lock import session_lock
+            k = kernel(args)
+            with session_lock(k.dir(args.session)):
+                k._recover_state(args.session)
+                args.func(args)
+        else:
+            args.func(args)
         return 0
     except SystemExit:
         raise

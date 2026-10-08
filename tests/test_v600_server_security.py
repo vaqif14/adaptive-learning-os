@@ -49,6 +49,13 @@ class AnonGuardTests(unittest.TestCase):
         s = _raw(self.port, "GET", "/api/languages", {"Host": f"127.0.0.1:{self.port}"})
         self.assertEqual(s, 200)
 
+    def test_non_object_json_is_bad_request(self):
+        for body in ([], "text", 7):
+            self.assertEqual(_raw(self.port, "POST", "/api/run", body=body), 400)
+
+    def test_malformed_language_is_bad_request(self):
+        self.assertEqual(_raw(self.port, "POST", "/api/run", body={"lang": [], "code": "print(1)"}), 400)
+
     def test_rebinding_host_rejected(self):
         # Browser pointed at a rebind domain sends that domain as Host -> blocked.
         s = _raw(self.port, "GET", "/api/languages", {"Host": "evil.example.com"})

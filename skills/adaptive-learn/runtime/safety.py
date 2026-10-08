@@ -35,7 +35,7 @@ def safe_session_dir(sessions_dir: Path, session_id: str) -> Path:
     return candidate
 
 
-def safe_input_path(workspace: Path, raw: str, *, must_exist: bool = True) -> Path:
+def safe_input_path(workspace: Path, raw: str, *, must_exist: bool = True, max_bytes: int = MAX_INPUT_FILE_BYTES) -> Path:
     """Confine a CLI-provided input file to ``workspace`` and cap its size."""
     p = Path(raw).expanduser()
     root = workspace.resolve()
@@ -45,6 +45,6 @@ def safe_input_path(workspace: Path, raw: str, *, must_exist: bool = True) -> Pa
     if must_exist:
         if not resolved.is_file():
             raise UnsafePathError(f"input_file_not_found:{raw!r}")
-        if resolved.stat().st_size > MAX_INPUT_FILE_BYTES:
+        if resolved.stat().st_size > max_bytes:
             raise UnsafePathError(f"input_file_too_large:{raw!r}")
     return resolved

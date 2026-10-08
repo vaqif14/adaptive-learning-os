@@ -63,7 +63,12 @@ def scaffold_from_node(node: dict) -> list[Card]:
 
 
 def record_review(card: dict, correct: bool, *, timestamp: str | None = None) -> dict:
-    card.setdefault("reviews", []).append({"correct": bool(correct), "timestamp": timestamp or now_iso()})
+    if type(correct) is not bool:
+        raise ValueError("card review correctness must be boolean")
+    from .evidence_history import parse_time
+    if timestamp is not None and parse_time(timestamp) is None:
+        raise ValueError("card review timestamp must be ISO datetime")
+    card.setdefault("reviews", []).append({"correct": correct, "timestamp": timestamp or now_iso()})
     return card
 
 

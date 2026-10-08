@@ -24,4 +24,4 @@ jobs:
       - name: Wheel install smoke
         run: |
           python -m pip install --quiet .
-          cd /tmp && alearn --version && alearn languages >/dev/null 2>&1 || alearn --help >/dev/null
+          python skills/adaptive-learn/scripts/smoke_installed.py

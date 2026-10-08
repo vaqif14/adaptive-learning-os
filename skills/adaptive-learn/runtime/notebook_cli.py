@@ -82,18 +82,18 @@ def choose_notebook(catalog: dict, notebook_id: str) -> dict:
 
 def bind_notebook(session_dir: Path, selection: dict) -> None:
     # Session-scoped binding; never changes the external CLI's global active notebook.
-    session = read_json(session_dir / "session.json")
-    write_json(session_dir / "notebooklm.json", selection)
-    session["notebooklm"] = selection
-    write_json(session_dir / "session.json", session)
-    data_path = session_dir / "workspace" / "frontend" / "src" / "data" / "roadmap.json"
-    if data_path.is_file():
-        data = read_json(data_path)
-        data["notebooklm"] = selection
-        write_json(data_path, data)
-    EventLedger(session_dir / "ledger.jsonl", session["session_id"]).append("event",
-        {"event_type": "notebook_selected", "provider": selection["provider"], "notebook_id": selection["notebook"]["id"]},
-        {"source": "notebook_cli"})
+    from .session_lock import session_lock
+    from .local_state import commit_state, recover_state
+    with session_lock(session_dir):
+        session = read_json(session_dir / "session.json")
+        ledger = EventLedger(session_dir / "ledger.jsonl", session["session_id"])
+        ledger.require_integrity()
+        recover_state(session_dir, ledger)
+        session = read_json(session_dir / "session.json")
+        session["notebooklm"] = selection
+        commit_state(session_dir, ledger,
+            {"event_type": "notebook_selected", "provider": selection["provider"], "notebook_id": selection["notebook"]["id"]},
+            {"session.json": session, "notebooklm.json": selection})
 
 
 def list_sources(selection: dict) -> dict:

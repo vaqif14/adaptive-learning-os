@@ -20,6 +20,8 @@ from .adapters import AdapterRegistry
 from .anchors import plan_anchor
 from .learning_workspace import normalize_plan, create_workspace
 from .safety import safe_session_dir, UnsafePathError
+from .session_lock import locked_session
+from .local_state import commit_state, recover_state, workspace_metadata, sync_tree
 
 
 class SessionKernel:
@@ -66,6 +68,7 @@ class SessionKernel:
         EvidenceProjector(ledger).write(d / "learner-evidence.json")
         return session
 
+    @locked_session
     def update_contract(self, session_id: str, **updates) -> dict:
         self.ledger(session_id).require_integrity()
         d = self.dir(session_id)
@@ -80,20 +83,14 @@ class SessionKernel:
             if k in allowed and v is not None:
                 current[k] = v
         contract = LearningContract.from_dict(current)
-        write_json(d / "learning-contract.json", contract.to_dict())
-        write_json(d / "source-policy.json", contract.source_policy.to_dict())
-
         session = read_json(d / "session.json")
         domain = read_json(d / "domain-context.json")
         anchor = plan_anchor(session["topic"], session.get("interaction_mode"), contract.to_dict(), domain)
-        write_json(d / "anchor-probe.json", anchor.to_dict())
         session["anchor_probe"] = anchor.to_dict()
-        write_json(d / "session.json", session)
-        self.ledger(session_id).append(
-            "event",
+        commit_state(d, self.ledger(session_id),
             {"event_type": "learning_contract_updated", "fields": sorted(k for k, v in updates.items() if v is not None)},
-            {"source": "session_kernel"},
-        )
+            {"learning-contract.json": contract.to_dict(), "source-policy.json": contract.source_policy.to_dict(),
+             "anchor-probe.json": anchor.to_dict(), "session.json": session})
         return session
 
     def dir(self, session_id: str) -> Path:
@@ -106,13 +103,21 @@ class SessionKernel:
             raise FileNotFoundError("unknown session")
         return d
 
-    def ledger(self, session_id: str) -> EventLedger:
-        return EventLedger(self.dir(session_id) / "ledger.jsonl", session_id)
+    def _recover_state(self, session_id: str):
+        recover_state(self.dir(session_id), self.ledger(session_id))
 
+    def ledger(self, session_id: str) -> EventLedger:
+        path = self.dir(session_id) / "ledger.jsonl"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError("session journal missing or empty; restore a verified backup")
+        return EventLedger(path, session_id)
+
+    @locked_session
     def rebuild_projection(self, session_id: str) -> dict:
         d = self.dir(session_id)
         return EvidenceProjector(self.ledger(session_id)).write(d / "learner-evidence.json")
 
+    @locked_session
     def verify_ledger(self, session_id: str, *, cadence_hours: float | None = None, force: bool = False) -> dict:
         """Verify the ledger hash chain and persist a dated integrity receipt.
 
@@ -166,6 +171,7 @@ class SessionKernel:
         ]
         return summarize_traces(traces)
 
+    @locked_session
     def verify_python(self, session_id: str, code: str, *,
                       capability: str = "python_artifact_behavior",
                       independence: str = "unknown",
@@ -261,17 +267,18 @@ class SessionKernel:
                 return n
         raise FileNotFoundError("unknown roadmap node")
 
+    @locked_session
     def add_card(self, session_id: str, node_id: str, front: str, back: str | None = None) -> dict:
         self.ledger(session_id).require_integrity()
         from .memory_cards import new_card
         cards = self._load_cards(session_id)
         c = new_card(node_id, front, back).to_dict()
         cards.append(c)
-        write_json(self._cards_path(session_id), cards)
-        self.ledger(session_id).append("event",
-            {"event_type": "card_created", "card_id": c["id"], "node_id": node_id}, {"source": "memory_cards"})
+        commit_state(self.dir(session_id), self.ledger(session_id),
+            {"event_type": "card_created", "card_id": c["id"], "node_id": node_id}, {"cards.json": cards})
         return c
 
+    @locked_session
     def scaffold_cards(self, session_id: str, node_id: str) -> list[dict]:
         self.ledger(session_id).require_integrity()
         from .memory_cards import scaffold_from_node
@@ -279,11 +286,11 @@ class SessionKernel:
         made = [c.to_dict() for c in scaffold_from_node(node)]
         cards = self._load_cards(session_id)
         cards.extend(made)
-        write_json(self._cards_path(session_id), cards)
-        self.ledger(session_id).append("event",
-            {"event_type": "cards_scaffolded", "node_id": node_id, "count": len(made)}, {"source": "memory_cards"})
+        commit_state(self.dir(session_id), self.ledger(session_id),
+            {"event_type": "cards_scaffolded", "node_id": node_id, "count": len(made)}, {"cards.json": cards})
         return made
 
+    @locked_session
     def review_card(self, session_id: str, card_id: str, correct: bool) -> dict:
         self.ledger(session_id).require_integrity()
         from .memory_cards import record_review, card_state
@@ -291,17 +298,18 @@ class SessionKernel:
         for c in cards:
             if c.get("id") == card_id:
                 record_review(c, correct)
-                write_json(self._cards_path(session_id), cards)
-                self.ledger(session_id).append("event",
-                    {"event_type": "card_reviewed", "card_id": card_id, "correct": bool(correct)}, {"source": "memory_cards"})
+                commit_state(self.dir(session_id), self.ledger(session_id),
+                    {"event_type": "card_reviewed", "card_id": card_id, "correct": correct}, {"cards.json": cards})
                 return card_state(c)
         raise FileNotFoundError("unknown card")
 
+    @locked_session
     def cards_due(self, session_id: str) -> dict:
         from .memory_cards import due_cards
         cards = self._load_cards(session_id)
         return {"total": len(cards), "due": due_cards(cards)}
 
+    @locked_session
     def set_roadmap(self, session_id: str, plan: dict) -> dict:
         """Attach/replace the roadmap on an existing session.
 
@@ -315,18 +323,21 @@ class SessionKernel:
         session = read_json(d / "session.json")
         contract = read_json(d / "learning-contract.json")
         norm = normalize_plan(session["topic"], contract.get("goal"), plan)
-        # No-delete: archive any existing workspace instead of dropping it.
-        ws_dir = d / "workspace"
-        if ws_dir.exists():
-            ws_dir.rename(d / f"workspace-prev-{new_id('v')}")
-        ws = create_workspace(ws_dir, norm, session_id)
+        # Prepare completely before the journal commit; old learner work stays live.
+        stage = d / f"workspace-stage-{new_id('v')}"
+        create_workspace(stage, norm, session_id)
+        write_json(stage / "frontend/src/data/roadmap.json",
+                   {**norm, "workspace_directory": str((d / "workspace").resolve())})
+        sync_tree(stage)
+        ws = workspace_metadata(d / "workspace")
         session["learning_workspace"] = ws
-        write_json(d / "session.json", session)
-        self.ledger(session_id).append(
-            "event", {"event_type": "roadmap_set", "nodes": len(norm["nodes"])}, {"source": "session_kernel"})
+        commit_state(d, self.ledger(session_id),
+            {"event_type": "roadmap_set", "nodes": len(norm["nodes"])},
+            {"session.json": session}, workspace_install=stage.name)
         return {"nodes": len(norm["nodes"]), "workspace": ws}
 
     # --- agentic driver: the OS tells the agent the next step ------------
+    @locked_session
     def next_action(self, session_id: str) -> dict:
         integrity = self.ledger(session_id).integrity()
         if not integrity["chain_ok"]:
@@ -420,6 +431,7 @@ class SessionKernel:
             decision["reviews"] = due_reviews
         return decision
 
+    @locked_session
     def verify_exercise(self, session_id: str, lang: str, code: str, *,
                         capability: str = "exercise_behavior",
                         expected_stdout: str | None = None,
@@ -490,6 +502,7 @@ class SessionKernel:
         self.rebuild_projection(session_id)
         return res
 
+    @locked_session
     def inspect(self, session_id: str) -> dict:
         d = self.dir(session_id)
         return {
