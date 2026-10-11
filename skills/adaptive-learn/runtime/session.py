@@ -23,6 +23,13 @@ from .safety import safe_session_dir, UnsafePathError
 from .session_lock import locked_session
 from .local_state import commit_state, recover_state, workspace_metadata, sync_tree
 
+# Attestation is a QUALIFIED EXTERNAL assessor channel. These identities are the learner
+# or the host itself, so accepting them would turn attest into self-report that can
+# advance/complete a node — the exact bypass this rejects.
+_DISALLOWED_ASSESSORS = {"", "self", "me", "myself", "i", "ai", "host", "none", "null",
+                         "learner", "student", "user", "assistant", "claude", "model",
+                         "system", "bot", "agent", "auto"}
+
 
 class SessionKernel:
     def __init__(self, workspace: Path):
@@ -473,7 +480,17 @@ class SessionKernel:
         and ``mastery_eligible: false`` — so it clears the advance gate and never
         counts as strong/mastery (``counts_as_strong`` rejects non-strong). This is
         the deliberate human channel for subjects a deterministic verifier can't score.
+
+        Self-report cannot advance a node: the assessor must be a NAMED external
+        qualified assessor. ``self``/``ai``/``host``/empty are rejected so a learner
+        (or the host agent) cannot self-attest their way to advancement or completion.
         """
+        a = (assessor or "").strip()
+        if a.lower() in _DISALLOWED_ASSESSORS or len(a) < 2:
+            raise ValueError(
+                "attest requires a named qualified external assessor (not self/ai/host/empty); "
+                "self-report never advances or completes a node")
+        assessor = a
         self.ledger(session_id).require_integrity()
         correct = outcome == "pass"
         self.ledger(session_id).append("evidence", {

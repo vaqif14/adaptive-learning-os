@@ -704,9 +704,12 @@ def cmd_serve(args):
     # refuses to start unless anonymous loopback is EXPLICITLY opted into with
     # --allow-anon. This stops a repo user from unknowingly running an auth-free
     # code-execution API. (ServerConfig still refuses anon/no-token off loopback.)
+    ui_dir = Path(args.ui_dir).resolve() if getattr(args, "ui_dir", None) else None
     cfg = ServerConfig(host=args.host, port=args.port, token=args.token,
                        allow_anon=args.allow_anon, ui_file=ui if ui.is_file() else None,
-                       prefer_backend=args.prefer, workspace=workspace(args))
+                       prefer_backend=args.prefer, workspace=workspace(args),
+                       ui_dir=ui_dir if (ui_dir and ui_dir.is_dir()) else None,
+                       allow_unsandboxed_exec=getattr(args, "allow_unsandboxed_exec", False))
     run_server(cfg)
 
 
@@ -1395,6 +1398,8 @@ def parser():
     sv.add_argument("--token", help="API token (default: ADAPTIVE_API_TOKEN env)")
     sv.add_argument("--allow-anon", action="store_true", help="loopback-only: skip auth (dev)")
     sv.add_argument("--ui", help="HTML file to serve at / (default: decks/academy.html)")
+    sv.add_argument("--ui-dir", help="directory to serve as a same-origin static app (index.html + assets); enables browser code-grading via /api")
+    sv.add_argument("--allow-unsandboxed-exec", action="store_true", help="permit /api/run and /api/verify-fastapi to execute submitted code on the host WITHOUT container isolation (dev only; the python verifier is always sandboxed)")
     sv.add_argument("--prefer", choices=["auto","local","container"])
     sv.set_defaults(func=cmd_serve)
 

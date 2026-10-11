@@ -45,12 +45,22 @@ class ServerConfig:
     def __init__(self, *, host: str = "127.0.0.1", port: int = 8777,
                  token: str | None = None, allow_anon: bool = False,
                  ui_file: Path | None = None, prefer_backend: str | None = None,
-                 max_concurrent_runs: int = 4, workspace: Path | None = None):
+                 max_concurrent_runs: int = 4, workspace: Path | None = None,
+                 ui_dir: Path | None = None, allow_unsandboxed_exec: bool = False):
         self.host = host
         self.port = port
         self.token = token if token is not None else os.environ.get("ADAPTIVE_API_TOKEN")
         self.allow_anon = allow_anon
         self.ui_file = ui_file
+        self.ui_dir = Path(ui_dir).resolve() if ui_dir else None
+        # Multi-language code execution (/api/run, /api/verify-fastapi) runs arbitrary
+        # submitted code. The host toolchain backend has NO isolation (file/network
+        # escape), so those endpoints are fail-closed: they require the container
+        # backend (the real sandbox) unless the operator explicitly accepts running
+        # untrusted code unsandboxed on the host. The sandboxed python verifier
+        # (/api/verify-python: AST policy + restricted builtins + rlimits) is unaffected.
+        self.allow_unsandboxed_exec = bool(allow_unsandboxed_exec
+                                           or os.environ.get("ALEARN_ALLOW_UNSANDBOXED_EXEC") == "1")
         self.prefer_backend = prefer_backend
         self.max_concurrent_runs = max(1, int(max_concurrent_runs))
         self.workspace = Path(workspace).resolve() if workspace else Path.cwd()
@@ -83,6 +93,42 @@ def _handler(cfg: ServerConfig):
                 self.send_header(h, v)
             self.end_headers()
             self.wfile.write(body)
+
+        _STATIC_CT = {
+            ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
+            ".mjs": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+            ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml",
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".gif": "image/gif", ".ico": "image/x-icon", ".webp": "image/webp",
+            ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+            ".map": "application/json", ".txt": "text/plain; charset=utf-8",
+            ".md": "text/markdown; charset=utf-8",
+        }
+
+        def _try_static(self, path: str) -> bool:
+            # Read-only static serving from cfg.ui_dir (same-origin app host). Returns
+            # True if the request was served. A path-traversal guard keeps the resolved
+            # target strictly inside ui_dir; /api/* is never served as a file.
+            if not cfg.ui_dir or path.startswith("/api/") or path == "/health":
+                return False
+            rel = path.lstrip("/") or "index.html"
+            try:
+                target = (cfg.ui_dir / rel).resolve()
+            except (OSError, ValueError):
+                return False
+            if target != cfg.ui_dir and cfg.ui_dir not in target.parents:
+                return False  # traversal attempt
+            if not target.is_file():
+                return False
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", self._STATIC_CT.get(target.suffix.lower(), "application/octet-stream"))
+            self.send_header("Content-Length", str(len(body)))
+            for h, v in _SECURITY_HEADERS:
+                self.send_header(h, v)
+            self.end_headers()
+            self.wfile.write(body)
+            return True
 
         _LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
 
@@ -171,6 +217,8 @@ def _handler(cfg: ServerConfig):
             path = urlparse(self.path).path
             if path == "/health":
                 return self._send(200, {"ok": True, "version": VERSION})
+            if self._try_static(path):
+                return
             if path in {"/", "/index.html"}:
                 if cfg.ui_file and cfg.ui_file.is_file():
                     body = cfg.ui_file.read_bytes()
@@ -220,6 +268,22 @@ def _handler(cfg: ServerConfig):
         def _dispatch(self, data):
             path = urlparse(self.path).path
             backend = select_backend(cfg.prefer_backend)
+            # Fail-closed sandbox gate for untrusted multi-language execution. The
+            # untrusted surface is an ANON loopback server (a local rebind/another local
+            # user can reach it with no secret); a token server's caller already holds
+            # the secret and is trusted. On the anon surface, host (unsandboxed) code
+            # execution is refused unless the container sandbox is selected or the
+            # operator explicitly accepts unsandboxed host exec. The sandboxed python
+            # verifier (/api/verify-python) is always available.
+            if (path in {"/api/run", "/api/verify-fastapi"} and cfg.allow_anon
+                    and not (cfg.prefer_backend == "container" or cfg.allow_unsandboxed_exec)):
+                return self._send(503, {
+                    "error": "sandboxed_executor_required",
+                    "detail": ("anon server: multi-language code execution needs the container "
+                               "sandbox (--prefer container with Docker), or explicit "
+                               "--allow-unsandboxed-exec for host execution WITHOUT isolation "
+                               "(dev only). /api/verify-python stays available either way."),
+                })
             if path == "/api/run":
                 lang = data.get("lang"); code = data.get("code")
                 if lang not in LANGUAGES or not isinstance(code, str) or not code:

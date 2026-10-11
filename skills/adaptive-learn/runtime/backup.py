@@ -128,6 +128,10 @@ def restore_session(kernel, backup_file):
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(data)
             ledger = EventLedger(stage / "ledger.jsonl", sid)
+            # Relocating a keyed ledger loses its path-keyed trust head; re-establish it
+            # here (safe only because the records must authentically HMAC-verify under
+            # the user key). Legacy keyless backups adopt nothing and verify as before.
+            ledger.adopt_trust()
             ledger.require_integrity()
             if not ledger.verified_records():
                 raise ValueError("backup contains an empty journal")
@@ -153,6 +157,8 @@ def restore_session(kernel, backup_file):
             sync_tree(stage)
             stage.rename(target)
             fsync_directory(kernel.sessions_dir)
+            # Re-register the trust head at the FINAL path (the stage head is now orphan).
+            EventLedger(target / "ledger.jsonl", sid).adopt_trust()
         finally:
             if stage.exists():
                 shutil.rmtree(stage)

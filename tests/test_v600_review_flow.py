@@ -42,7 +42,7 @@ def test_attestation_advances_non_code_node_without_mastery(tmp_path):
 def test_attestation_is_never_strong(tmp_path):
     k, sid = _start(tmp_path)
     k.set_roadmap(sid, ROADMAP)
-    k.attest(sid, "n1", outcome="pass")
+    k.attest(sid, "n1", outcome="pass", assessor="teacher-1")
     proj = k.inspect(sid)["learner_evidence"]
     cap = proj["demonstrated_capabilities"]["n1"]
     assert cap["strong_unassisted_successes"] == 0      # advanced, not mastered
@@ -59,10 +59,33 @@ def test_attestation_record_fails_counts_as_strong():
 def test_failed_attestation_does_not_advance(tmp_path):
     k, sid = _start(tmp_path)
     k.set_roadmap(sid, ROADMAP)
-    k.attest(sid, "n1", outcome="fail")
+    k.attest(sid, "n1", outcome="fail", assessor="teacher-1")
     nxt = k.next_action(sid)
     assert nxt["action"] in {"teach", "verify", "feedback", "change_approach"}
     assert nxt.get("node") == "n1"                      # still on n1, not complete
+
+
+def test_self_report_assessor_is_rejected(tmp_path):
+    # The demonstrated bypass: self-attesting to advance/complete without verification.
+    import pytest
+    k, sid = _start(tmp_path)
+    k.set_roadmap(sid, ROADMAP)
+    for bad in (None, "", "self", "AI", "host", "learner", "x"):
+        with pytest.raises(ValueError):
+            k.attest(sid, "n1", outcome="pass", assessor=bad)
+    # and the node did NOT advance to completion via any rejected attempt
+    assert k.next_action(sid).get("node") == "n1"
+
+
+def test_attested_completion_is_labelled_distinctly(tmp_path):
+    # A node completed only by qualified attestation must not be reported as mastered.
+    k, sid = _start(tmp_path)
+    k.set_roadmap(sid, ROADMAP)
+    k.attest(sid, "n1", outcome="pass", assessor="teacher-1")
+    nxt = k.next_action(sid)
+    assert nxt["action"] == "complete"
+    assert nxt["reason"] == "attested_complete"          # not "all_nodes_mastered"
+    assert "n1" in nxt.get("attested_nodes", [])
 
 
 def test_orphan_capability_does_not_block_teaching(tmp_path):

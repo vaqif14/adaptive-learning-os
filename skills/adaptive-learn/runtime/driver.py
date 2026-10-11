@@ -132,7 +132,20 @@ def next_action(
                 "instruction": "Use a fresh transfer task, or schedule delayed practice at least 24 hours after the last attempt. Do not repeat the same check to manufacture mastery.",
             }).to_dict()
 
-    # 5. Every node mastered.
+    # 5. Every node is done. Label completion honestly: a node advanced only by
+    # qualified-assessor attestation is NOT runtime-verified mastery, so it must not be
+    # reported as "all_nodes_mastered".
+    attested_only = [n["id"] for n in nodes
+                     if node_status.get(n["id"], {}).get("attested")
+                     and not node_status.get(n["id"], {}).get("mastered")]
+    if attested_only:
+        return NextAction("complete", {
+            "reason": "attested_complete",
+            "attested_nodes": attested_only,
+            "instruction": ("Course advanced to completion, but these nodes rest on "
+                            "qualified-assessor attestation, not runtime-verified mastery. "
+                            "Keep spaced review + cards running."),
+        }).to_dict()
     return NextAction("complete", {
         "reason": "all_nodes_mastered",
         "instruction": "Course goal met; keep only spaced review + cards running.",

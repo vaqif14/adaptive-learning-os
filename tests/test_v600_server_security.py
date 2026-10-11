@@ -34,8 +34,12 @@ class AnonGuardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        # This class exercises the local executor path (CSRF/host/validation), so it
+        # explicitly opts into unsandboxed host exec; the sandbox GATE is covered by
+        # SandboxGateTests below.
         cls.srv = make_server(ServerConfig(host="127.0.0.1", port=0, allow_anon=True,
-                                           workspace=Path(cls.tmp.name), prefer_backend="local"))
+                                           workspace=Path(cls.tmp.name), prefer_backend="local",
+                                           allow_unsandboxed_exec=True))
         cls.port = cls.srv.server_address[1]
         cls.t = threading.Thread(target=cls.srv.serve_forever, daemon=True)
         cls.t.start()
@@ -79,6 +83,62 @@ class AnonGuardTests(unittest.TestCase):
         s = _raw(self.port, "POST", "/api/run",
                  {"Host": f"127.0.0.1:{self.port}"},
                  {"lang": "python", "code": "print(1)"})
+        self.assertEqual(s, 200)
+
+
+_GATE_TOKEN = "sandbox-gate-token-abcdefghijklmnop"  # >=24 chars
+
+
+class SandboxGateTests(unittest.TestCase):
+    """Anon multi-language exec is fail-closed unless container/opt-in; token trusted."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        # anon + host backend, NO opt-in -> untrusted exec must be refused.
+        cls.srv = make_server(ServerConfig(host="127.0.0.1", port=0, allow_anon=True,
+                                           workspace=Path(cls.tmp.name), prefer_backend="local"))
+        cls.port = cls.srv.server_address[1]
+        cls.t = threading.Thread(target=cls.srv.serve_forever, daemon=True)
+        cls.t.start()
+        # token server: the caller holds the secret -> trusted, exec not gated.
+        cls.ttmp = tempfile.TemporaryDirectory()
+        cls.tsrv = make_server(ServerConfig(host="127.0.0.1", port=0, token=_GATE_TOKEN,
+                                            workspace=Path(cls.ttmp.name), prefer_backend="local"))
+        cls.tport = cls.tsrv.server_address[1]
+        cls.tt = threading.Thread(target=cls.tsrv.serve_forever, daemon=True)
+        cls.tt.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.tmp.cleanup()
+        cls.tsrv.shutdown()
+        cls.ttmp.cleanup()
+
+    def test_anon_unsandboxed_run_is_refused(self):
+        s = _raw(self.port, "POST", "/api/run",
+                 {"Host": f"127.0.0.1:{self.port}"},
+                 {"lang": "python", "code": "print(1)", "expect_stdout": "1"})
+        self.assertEqual(s, 503)
+
+    def test_anon_verify_fastapi_is_refused(self):
+        s = _raw(self.port, "POST", "/api/verify-fastapi",
+                 {"Host": f"127.0.0.1:{self.port}"},
+                 {"code": "x", "checks": []})
+        self.assertEqual(s, 503)
+
+    def test_anon_sandboxed_python_verifier_not_gated(self):
+        # The AST+builtins-sandboxed python verifier stays available on the anon surface.
+        s = _raw(self.port, "POST", "/api/verify-python",
+                 {"Host": f"127.0.0.1:{self.port}"},
+                 {"session": "sess_does_not_exist", "code": "print(1)"})
+        self.assertNotEqual(s, 503)  # 404 unknown session, never the sandbox gate
+
+    def test_token_server_exec_not_gated(self):
+        s = _raw(self.tport, "POST", "/api/run",
+                 {"Authorization": f"Bearer {_GATE_TOKEN}"},
+                 {"lang": "python", "code": "print(1)", "expect_stdout": "1"})
         self.assertEqual(s, 200)
 
 
