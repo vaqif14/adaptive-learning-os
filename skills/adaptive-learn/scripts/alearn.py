@@ -932,6 +932,222 @@ def cmd_study_plan(args):
                          minutes_per_node=args.minutes_per_node, deadline=args.deadline))
 
 
+# --- course: guarded local learning experience --------------------------------
+def _course(args):
+    from runtime.course import CourseKernel
+    return CourseKernel(workspace(args))
+
+
+def _jsonfile(args, raw):
+    return json.loads(safe_input_path(workspace(args), raw).read_text(encoding="utf-8"))
+
+
+def _kw(args):
+    return {"expected_revision": getattr(args, "expected_revision", None),
+            "idempotency_key": getattr(args, "idempotency_key", None)}
+
+
+def _commitments(args):
+    c = {}
+    if getattr(args, "weekly_minutes", None) is not None:
+        c["weekly_active_minutes"] = args.weekly_minutes
+    if getattr(args, "days_per_week", None) is not None:
+        c["study_days_per_week"] = args.days_per_week
+    cps = []
+    for raw in getattr(args, "checkpoint", None) or []:
+        node, _, due = raw.partition(":")
+        cps.append({"node_id": node or None, "due": due})
+    if cps:
+        c["checkpoints"] = cps
+    if getattr(args, "agreed_text", None):
+        c["agreed_text"] = args.agreed_text
+    return c or None
+
+
+def cmd_course(args):
+    from runtime import course_sources as csrc
+    k = _course(args)
+    sub = args.course_cmd
+    sid = getattr(args, "session", None)
+    if sub == "init":
+        return printj(k.init(sid))
+    if sub == "turn":
+        return printj(k.turn(sid))
+    if sub == "state":
+        return printj(k.state(sid))
+    if sub == "export":
+        out = k.export(sid)
+        if args.output:
+            from runtime.utils import write_json
+            target = safe_input_path(workspace(args), args.output, must_exist=False)
+            write_json(target, out)
+            return printj({"written": str(target), "export_schema_version": out["export_schema_version"]})
+        return printj(out)
+    if sub == "target":
+        return printj(k.record_target(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "diagnostic":
+        return printj(k.record_diagnostic(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "sources-capabilities":
+        return printj(csrc.capabilities(args.notebook_cli))
+    if sub == "sources-create-notebook":
+        caps = csrc.capabilities(args.notebook_cli)
+        created = csrc.create_notebook(args.title, caps)
+        if created["status"] != "created":
+            printj(created)
+            raise SystemExit(1)
+        selection = choose_notebook(list_notebooks(caps["provider"]), created["notebook"]["id"])
+        bind_notebook(kernel(args).dir(sid), selection)
+        return printj({"created": created["notebook"], "bound_to_session": sid})
+    if sub == "sources-add":
+        caps = csrc.capabilities(args.notebook_cli)
+        selection = read_json(kernel(args).dir(sid) / "notebooklm.json")
+        resources = _jsonfile(args, args.file)
+        results = []
+        for r in resources:
+            res = csrc.add_source(selection["notebook"]["id"], r, caps, workspace=workspace(args))
+            results.append({"key": r.get("key"), **res})
+        return printj({"results": results})
+    if sub == "sources-validate":
+        caps = csrc.capabilities(args.notebook_cli)
+        selection = read_json(kernel(args).dir(sid) / "notebooklm.json")
+        expected = _jsonfile(args, args.file)
+        manifest = csrc.validate_resources(selection["notebook"]["id"], expected, caps,
+                                           kernel(args).dir(sid) / "sources", wait_timeout=args.wait_timeout)
+        k.record_sources(sid, manifest, expected, **_kw(args))
+        return printj({k2: manifest[k2] for k2 in ("manifest_version", "complete", "summary", "resources",
+                                                    "unexpected_sources", "cli_version")})
+    if sub == "sources-ask":
+        caps = csrc.capabilities(args.notebook_cli)
+        selection = read_json(kernel(args).dir(sid) / "notebooklm.json")
+        return printj(csrc.ask_notebook(selection["notebook"]["id"], args.question, caps, args.source or None))
+    if sub == "propose-roadmap":
+        return printj(k.propose_roadmap(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "approve-roadmap":
+        return printj(k.approve_roadmap(sid, args.roadmap_version, channel="cli", statement=args.statement,
+                                        commitments=_commitments(args), **_kw(args)))
+    if sub == "author-items":
+        return printj(k.install_items(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "author-lesson":
+        return printj(k.install_lesson(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "start":
+        return printj(k.start_mission(sid, args.node, **_kw(args)))
+    if sub == "help":
+        return printj(k.help(sid, args.node, args.kind, **_kw(args)))
+    if sub == "self-explain":
+        text = safe_input_path(workspace(args), args.file).read_text(encoding="utf-8")
+        return printj(k.self_explanation(sid, args.node, text, **_kw(args)))
+    if sub == "practice-begin":
+        return printj(k.begin_practice(sid, args.node, **_kw(args)))
+    if sub == "practice-check":
+        return printj(k.practice_check(sid, args.node, **_kw(args)))
+    if sub == "exam-start":
+        return printj(k.start_exam(sid, args.node, fast_track=args.fast_track, **_kw(args)))
+    if sub == "exam-submit":
+        return printj(k.submit_and_finalize(sid, args.attempt, **_kw(args)))
+    if sub == "exam-abandon":
+        return printj(k.abandon_exam(sid, args.attempt, args.reason, **_kw(args)))
+    if sub == "next":
+        return printj(k.advance(sid, **_kw(args)))
+    if sub == "commit":
+        return printj(k.record_commitments(sid, _commitments(args) or {}, **_kw(args)))
+    if sub == "accountability":
+        return printj(k.respond_accountability(sid, args.blocker, args.note, **_kw(args)))
+    if sub == "regenerate-ui":
+        return printj(k.regenerate_ui(sid))
+    if sub == "build-ui":
+        import subprocess
+        frontend = kernel(args).dir(sid) / "workspace" / "frontend"
+        for step in (["npm", "install", "--no-audit", "--no-fund"], ["npm", "run", "build"]):
+            proc = subprocess.run(step, cwd=frontend, capture_output=True, text=True, timeout=600, check=False)
+            if proc.returncode:
+                print(proc.stdout[-2000:], proc.stderr[-2000:], file=sys.stderr)
+                raise SystemExit(proc.returncode)
+        return printj({"built": str(frontend / "dist")})
+    if sub == "serve":
+        k.state(sid)   # fail fast on a missing/invalid course
+        dist = kernel(args).dir(sid) / "workspace" / "frontend" / "dist"
+        if not (dist / "index.html").is_file():
+            raise SystemExit(f"no built UI at {dist}; run `alearn course build-ui --session {sid}` first")
+        cfg = ServerConfig(host=args.host, port=args.port, token=args.token, allow_anon=args.allow_anon,
+                           workspace=workspace(args), ui_dir=dist, course_session=sid)
+        print(f"Kurs tətbiqi: http://{args.host}:{args.port}/  (session {sid})")
+        return run_server(cfg)
+    raise SystemExit(f"unknown course command {sub}")
+
+
+def _add_course_parser(sp):
+    c = sp.add_parser("course", help="guarded course: sources, roadmap approval, teaching, practice, exam, mission")
+    cs = c.add_subparsers(dest="course_cmd", required=True)
+
+    def sub(name, help_text, *, session=True, mutating=False):
+        p = cs.add_parser(name, help=help_text)
+        if session:
+            p.add_argument("--session", required=True)
+        if mutating:
+            p.add_argument("--expected-revision", type=int)
+            p.add_argument("--idempotency-key")
+        p.add_argument("--notebook-cli", choices=["notebooklm", "nlm"], default="notebooklm")
+        p.set_defaults(func=cmd_course)
+        return p
+
+    sub("init", "create/migrate course state for a session")
+    sub("turn", "agent turn: hydrate persisted state, reconcile, list permitted actions")
+    sub("state", "read-only course state")
+    sub("export", "versioned human-readable export").add_argument("--output")
+    sub("target", "record a verified goal target (e.g. certification)", mutating=True).add_argument("--file", required=True)
+    sub("diagnostic", "record provisional profile/diagnostic", mutating=True).add_argument("--file", required=True)
+    sub("sources-capabilities", "inspect installed NotebookLM CLI (no credentials shown)", session=False)
+    sub("sources-create-notebook", "create a NotebookLM notebook and bind it to this session").add_argument("--title", required=True)
+    sub("sources-add", "add authorized resources (JSON list) to the bound notebook").add_argument("--file", required=True)
+    v = sub("sources-validate", "verify every expected resource; record the manifest", mutating=True)
+    v.add_argument("--file", required=True)
+    v.add_argument("--wait-timeout", type=int, default=90)
+    a = sub("sources-ask", "grounded retrieval from the bound notebook (authoring aid)")
+    a.add_argument("--question", required=True)
+    a.add_argument("--source", action="append")
+    sub("propose-roadmap", "install/replace roadmap; material change requires re-approval", mutating=True).add_argument("--file", required=True)
+    ap = sub("approve-roadmap", "learner's explicit approval of the exact roadmap version", mutating=True)
+    ap.add_argument("--roadmap-version", required=True)
+    ap.add_argument("--statement")
+    for p in (ap, sub("commit", "record agreed time/checkpoint commitments", mutating=True)):
+        p.add_argument("--weekly-minutes", type=int)
+        p.add_argument("--days-per-week", type=int)
+        p.add_argument("--checkpoint", action="append", help="NODE:YYYY-MM-DD")
+        p.add_argument("--agreed-text")
+    for name in ("author-items", "author-lesson"):
+        p = sub(name, f"validate + install {name.split('-')[1]} for a node", mutating=True)
+        p.add_argument("--node", required=True)
+        p.add_argument("--file", required=True)
+    for name in ("start", "practice-begin", "practice-check"):
+        sub(name, f"{name} on a node", mutating=True).add_argument("--node", required=True)
+    h = sub("help", "teaching help (records support provenance)", mutating=True)
+    h.add_argument("--node", required=True)
+    h.add_argument("--kind", required=True, choices=["explain", "why", "worked_example", "hint", "alternative"])
+    se = sub("self-explain", "learner self-explanation (coverage feedback only)", mutating=True)
+    se.add_argument("--node", required=True)
+    se.add_argument("--file", required=True)
+    es = sub("exam-start", "start or resume the fresh unassisted exam for a node", mutating=True)
+    es.add_argument("--node", required=True)
+    es.add_argument("--fast-track", action="store_true")
+    sub("exam-submit", "submit + score + finalize (each step durable/resumable)", mutating=True).add_argument("--attempt", required=True)
+    ab = sub("exam-abandon", "explicitly abandon (never counted as success)", mutating=True)
+    ab.add_argument("--attempt", required=True)
+    ab.add_argument("--reason")
+    sub("next", "feedback -> next mission", mutating=True)
+    ac = sub("accountability", "learner's answer to a commitment discrepancy", mutating=True)
+    ac.add_argument("--blocker", required=True,
+                    choices=["time", "difficulty", "unclear_material", "motivation", "health_or_personal", "tooling", "other"])
+    ac.add_argument("--note")
+    sub("regenerate-ui", "refresh frontend code; keeps IDs, evidence and learner files")
+    sub("build-ui", "npm install + build the course frontend (template dependencies only)").set_defaults(no_outer_lock=True)
+    srv = sub("serve", "serve the built course app + local bridge for this session")
+    srv.add_argument("--host", default="127.0.0.1")
+    srv.add_argument("--port", type=int, default=8787)
+    srv.add_argument("--token")
+    srv.add_argument("--allow-anon", action="store_true", help="loopback-only; Host/Origin checks still apply")
+    srv.set_defaults(no_outer_lock=True)
+
+
 def _add_contract_args(s):
     s.add_argument("--goal")
     s.add_argument("--application-context")
@@ -1469,6 +1685,7 @@ def parser():
     ins.add_argument("--session", required=True)
     ins.set_defaults(func=cmd_inspect)
 
+    _add_course_parser(sp)
     return p
 
 
@@ -1482,7 +1699,9 @@ def main(argv=None) -> int:
     from runtime.safety import UnsafePathError
     args = parser().parse_args(argv)
     try:
-        if getattr(args, "session", None):
+        # A long-running server must not hold the session lock (agent CLI calls
+        # would block); course actions lock per operation themselves.
+        if getattr(args, "session", None) and not getattr(args, "no_outer_lock", False):
             from runtime.session_lock import session_lock
             k = kernel(args)
             with session_lock(k.dir(args.session)):
@@ -1494,7 +1713,8 @@ def main(argv=None) -> int:
     except SystemExit:
         raise
     except (UnsafePathError, FileNotFoundError, KeyError, ValueError, OSError) as e:
-        print(_json.dumps({"error": type(e).__name__, "detail": str(e)}), file=sys.stderr)
+        body = e.to_dict() if hasattr(e, "to_dict") else {"error": type(e).__name__, "detail": str(e)}
+        print(_json.dumps(body, ensure_ascii=False), file=sys.stderr)
         return 1
 
 

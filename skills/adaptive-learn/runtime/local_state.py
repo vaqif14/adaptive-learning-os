@@ -11,7 +11,8 @@ import re
 from .utils import read_json, write_json, fsync_directory
 
 STATE_FILES = {"cards.json", "learning-contract.json", "source-policy.json",
-               "anchor-probe.json", "session.json", "notebooklm.json"}
+               "anchor-probe.json", "session.json", "notebooklm.json",
+               "course-state.json", "source-manifest.json"}
 
 
 def workspace_metadata(root):

@@ -113,6 +113,11 @@ class SessionKernel:
     def _recover_state(self, session_id: str):
         recover_state(self.dir(session_id), self.ledger(session_id))
 
+    def _exam_guard(self, session_id: str, capability: str | None) -> None:
+        # Course sessions lock teaching/evidence side-channels during an active exam.
+        from .course import assert_no_active_exam
+        assert_no_active_exam(self.dir(session_id), capability)
+
     def ledger(self, session_id: str) -> EventLedger:
         path = self.dir(session_id) / "ledger.jsonl"
         if not path.is_file() or path.stat().st_size == 0:
@@ -200,6 +205,7 @@ class SessionKernel:
         from .evidence_semantics import normalize_evidence_semantics
         from .evidence_history import merge_attempt_support, execution_fingerprint
         d = self.dir(session_id)
+        self._exam_guard(session_id, capability)
         fingerprint = execution_fingerprint(capability, code, [expected_stdout, trusted_test_code])
         self.ledger(session_id).require_integrity()
         support = merge_attempt_support(self.ledger(session_id).verified_records(), capability, attempt_id, support_provenance, fingerprint=fingerprint)
@@ -345,7 +351,7 @@ class SessionKernel:
         old_ws = d / "workspace"
         if old_ws.exists():
             for n in norm["nodes"]:
-                for sub in ("submission", "feedback"):
+                for sub in ("submission", "feedback", "exam", "practice"):
                     src = old_ws / "modules" / n["id"] / sub
                     dst = stage / "modules" / n["id"] / sub
                     if src.is_dir() and dst.parent.exists():
@@ -366,6 +372,17 @@ class SessionKernel:
             return {"action": "repair_ledger", "reason": "evidence_journal_integrity_broken",
                     "integrity": integrity,
                     "instruction": "Stop learning-state writes. Preserve the original journal and investigate or restore a verified backup; never silently discard damaged evidence."}
+        # A course session's persisted phase (approval pending, exam lock) outranks
+        # the generic loop, so the agent cannot teach past an unapproved roadmap or
+        # into an active exam by forgetting a prose rule.
+        from .course import course_gate
+        gate = course_gate(self.dir(session_id))
+        if gate:
+            return gate
+        return self._driver_decision(session_id)
+
+    def _driver_decision(self, session_id: str) -> dict:
+        """Generic evidence-driven next step. Caller must hold the session lock."""
         from .driver import next_action as _next
         from .intake import INTAKE_QUESTIONS
         from .mastery import observations_from_projection_caps, estimate
@@ -492,6 +509,7 @@ class SessionKernel:
                 "self-report never advances or completes a node")
         assessor = a
         self.ledger(session_id).require_integrity()
+        self._exam_guard(session_id, node_id)
         correct = outcome == "pass"
         self.ledger(session_id).append("evidence", {
             "evidence_id": new_id("ev"),
@@ -534,6 +552,7 @@ class SessionKernel:
         from .execution import run_exercise, select_backend
         from .evidence_semantics import normalize_evidence_semantics
         from .evidence_history import merge_attempt_support, execution_fingerprint
+        self._exam_guard(session_id, capability)
         fingerprint = execution_fingerprint(capability, [lang, code], expected_stdout)
         self.ledger(session_id).require_integrity()
         support = merge_attempt_support(self.ledger(session_id).verified_records(), capability, attempt_id, support_provenance, fingerprint=fingerprint)

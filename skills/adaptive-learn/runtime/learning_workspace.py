@@ -40,7 +40,24 @@ def normalize_plan(topic: str, goal: str | None, plan: dict | None) -> dict:
         pitfalls = node.get("pitfalls", [])
         if not isinstance(pitfalls, list) or any(not isinstance(x, str) or not x.strip() for x in pitfalls):
             raise ValueError("pitfalls must be a list of non-empty strings (where people get stuck)")
-        nodes.append({"stage": node.get("stage", ""), "lesson": node.get("lesson", ""), "id": nid, "title": node["title"], "task": node["task"], "requires": requires, "pitfalls": pitfalls, "status": "not_assessed"})
+        normalized = {"stage": node.get("stage", ""), "lesson": node.get("lesson", ""), "id": nid, "title": node["title"], "task": node["task"], "requires": requires, "pitfalls": pitfalls, "status": "not_assessed"}
+        # Optional roadmap detail shown on node click (skills, outcomes, practice, grounding).
+        for key in ("outcomes", "skills", "source_refs"):
+            if key in node:
+                value = node[key]
+                if not isinstance(value, list) or any(not isinstance(x, str) or not x.strip() for x in value):
+                    raise ValueError(f"{key} must be a list of non-empty strings")
+                normalized[key] = value
+        for key in ("practice", "exam_domain"):
+            if key in node:
+                if not isinstance(node[key], str) or not node[key].strip():
+                    raise ValueError(f"{key} must be non-empty text")
+                normalized[key] = node[key]
+        if "estimated_minutes" in node:
+            if type(node["estimated_minutes"]) is not int or not 1 <= node["estimated_minutes"] <= 6000:
+                raise ValueError("estimated_minutes must be an integer between 1 and 6000")
+            normalized["estimated_minutes"] = node["estimated_minutes"]
+        nodes.append(normalized)
         seen.add(nid)
     return {"topic": topic, "goal": goal, "status": plan.get("status", "proposed"), "sources": sources, "nodes": nodes}
 

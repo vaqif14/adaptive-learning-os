@@ -39,6 +39,9 @@ _SECURITY_HEADERS = (
     ("Referrer-Policy", "no-referrer"),
     ("Cross-Origin-Opener-Policy", "same-origin"),
 )
+# Course app: built bundle only, same-origin API, no third-party code or framing.
+_COURSE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+               "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 
 class ServerConfig:
@@ -46,9 +49,12 @@ class ServerConfig:
                  token: str | None = None, allow_anon: bool = False,
                  ui_file: Path | None = None, prefer_backend: str | None = None,
                  max_concurrent_runs: int = 4, workspace: Path | None = None,
-                 ui_dir: Path | None = None, allow_unsandboxed_exec: bool = False):
+                 ui_dir: Path | None = None, allow_unsandboxed_exec: bool = False,
+                 course_session: str | None = None):
         self.host = host
         self.port = port
+        # Course mode binds the local app to exactly one learner session.
+        self.course_session = course_session
         self.token = token if token is not None else os.environ.get("ADAPTIVE_API_TOKEN")
         self.allow_anon = allow_anon
         self.ui_file = ui_file
@@ -126,6 +132,9 @@ def _handler(cfg: ServerConfig):
             self.send_header("Content-Length", str(len(body)))
             for h, v in _SECURITY_HEADERS:
                 self.send_header(h, v)
+            if cfg.course_session:
+                self.send_header("Content-Security-Policy", _COURSE_CSP)
+                self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
             return True
@@ -212,11 +221,103 @@ def _handler(cfg: ServerConfig):
         def _query(self):
             return {k: (v[0] if v else "") for k, v in parse_qs(urlparse(self.path).query).items()}
 
+        # --- course bridge (one session, same-origin UI) -----------------
+        def _course(self):
+            from .course import CourseKernel
+            return CourseKernel(cfg.workspace)
+
+        def _course_error(self, exc):
+            code = getattr(exc, "code", "invalid_request")
+            status = {"exam_active": 423, "course_not_initialized": 404}.get(code, 409)
+            body = exc.to_dict() if hasattr(exc, "to_dict") else {"error": code}
+            if code == "revision_conflict":
+                try:
+                    body["state"] = self._course().state(cfg.course_session)
+                except (ValueError, OSError):
+                    pass
+            return self._send(status, body)
+
+        def _course_get(self, path):
+            from .course_state import CourseStateError
+            sid = cfg.course_session
+            try:
+                if path == "/api/course/state":
+                    return self._send(200, self._course().state(sid))
+                if path == "/api/course/lesson":
+                    return self._send(200, self._course().lesson_view(sid, self._query().get("node", "")))
+                if path == "/api/course/export":
+                    return self._send(200, self._course().export(sid))
+            except CourseStateError as exc:
+                return self._course_error(exc)
+            except (FileNotFoundError, KeyError, ValueError, OSError) as e:
+                return self._send(404, {"error": type(e).__name__})
+            return self._send(404, {"error": "not_found"})
+
+        def _course_post(self, path, data):
+            from .course_state import UI_SCHEMA_VERSION, CourseStateError
+            sid = cfg.course_session
+            if data.get("ui_schema") != UI_SCHEMA_VERSION:
+                return self._send(409, {"error": "stale_ui", "expected_ui_schema": UI_SCHEMA_VERSION,
+                                        "message": "Bu interfeys köhnə versiyadır. Səhifəni yenilə."})
+            k = self._course()
+            unrevisioned = {"/api/course/resume", "/api/course/activity"}
+            rev = data.get("expected_revision")
+            if path not in unrevisioned and type(rev) is not int:
+                return self._send(428, {"error": "expected_revision_required"})
+            kw = {"expected_revision": rev, "idempotency_key": data.get("idempotency_key")}
+            routes = {
+                "/api/course/resume": lambda: k.resume(sid),
+                "/api/course/activity": lambda: k.record_activity(sid, data.get("interval") or {}),
+                "/api/course/approve": lambda: k.approve_roadmap(sid, data.get("roadmap_version"), channel="ui",
+                                                                 statement=data.get("statement"),
+                                                                 commitments=data.get("commitments"), **kw),
+                "/api/course/mission/start": lambda: k.start_mission(sid, data.get("node"), **kw),
+                "/api/course/help": lambda: k.help(sid, data.get("node"), data.get("kind"), **kw),
+                "/api/course/self-explanation": lambda: k.self_explanation(sid, data.get("node"), data.get("text"), **kw),
+                "/api/course/practice/begin": lambda: k.begin_practice(sid, data.get("node"), **kw),
+                "/api/course/practice/check": lambda: k.practice_check(sid, data.get("node"), **kw),
+                "/api/course/exam/start": lambda: k.start_exam(sid, data.get("node"),
+                                                               fast_track=bool(data.get("fast_track")), **kw),
+                "/api/course/exam/submit": lambda: k.submit_and_finalize(sid, data.get("attempt_id"), **kw),
+                "/api/course/exam/abandon": lambda: k.abandon_exam(sid, data.get("attempt_id"), data.get("reason"), **kw),
+                "/api/course/next": lambda: k.advance(sid, **kw),
+                "/api/course/commitments": lambda: k.record_commitments(sid, data.get("commitments") or {}, **kw),
+                "/api/course/accountability": lambda: k.respond_accountability(sid, data.get("blocker"),
+                                                                              data.get("note"), **kw),
+            }
+            if path not in routes:
+                return self._send(404, {"error": "not_found"})
+            try:
+                return self._send(200, routes[path]())
+            except CourseStateError as exc:
+                return self._course_error(exc)
+
         # --- routes ------------------------------------------------------
         def do_GET(self):
             path = urlparse(self.path).path
             if path == "/health":
                 return self._send(200, {"ok": True, "version": VERSION})
+            if cfg.course_session and path == "/roadmap.html":
+                if not self._authed():
+                    return self._send(401, {"error": "unauthorized"})
+                try:
+                    page = self._kernel().dir(cfg.course_session) / "workspace" / "roadmap.html"
+                except FileNotFoundError:
+                    return self._send(404, {"error": "not_found"})
+                if not page.is_file():
+                    return self._send(404, {"error": "not_found"})
+                body = page.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                for h, v in _SECURITY_HEADERS:
+                    self.send_header(h, v)
+                self.end_headers()
+                return self.wfile.write(body)
+            if cfg.course_session and path.startswith("/api/course/"):
+                if not self._authed():
+                    return self._send(401, {"error": "unauthorized"})
+                return self._course_get(path)
             if self._try_static(path):
                 return
             if path in {"/", "/index.html"}:
@@ -267,6 +368,8 @@ def _handler(cfg: ServerConfig):
 
         def _dispatch(self, data):
             path = urlparse(self.path).path
+            if cfg.course_session and path.startswith("/api/course/"):
+                return self._course_post(path, data)
             backend = select_backend(cfg.prefer_backend)
             # Fail-closed sandbox gate for untrusted multi-language execution. The
             # untrusted surface is an ANON loopback server (a local rebind/another local
