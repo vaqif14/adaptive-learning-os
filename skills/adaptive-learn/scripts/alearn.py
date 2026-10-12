@@ -66,6 +66,10 @@ FORMAT_CHOICES = [
     "novel_unassisted_transfer", "compression_output", "plan_output", "ai_generated_output", "unknown",
 ]
 GOAL_MODE_CHOICES = ["learn", "perform_with_assistance", "deliver_artifact", "quick_reference"]
+# Session commands that teach, record evidence or change the roadmap; refused while a course
+# exam is active (the exam's own submit/abandon go through `course`).
+EXAM_LOCKED_COMMANDS = {"evidence", "rubric-check", "listener-check", "workspace-check", "verify-python",
+                        "verify-exercise", "attest", "set-roadmap", "add-card", "scaffold-cards", "review-card"}
 AI_ROLE_CHOICES = ["inform", "model", "probe", "scaffold", "critique", "verify", "delegate", "replace"]
 
 
@@ -980,6 +984,8 @@ def cmd_course(args):
         if args.output:
             from runtime.utils import write_json
             target = safe_input_path(workspace(args), args.output, must_exist=False)
+            if target.exists():
+                raise ValueError("export target exists; choose a new file (exports never overwrite)")
             write_json(target, out)
             return printj({"written": str(target), "export_schema_version": out["export_schema_version"]})
         return printj(out)
@@ -1011,9 +1017,10 @@ def cmd_course(args):
         caps = csrc.capabilities(args.notebook_cli)
         selection = read_json(kernel(args).dir(sid) / "notebooklm.json")
         expected = _jsonfile(args, args.file)
+        staging = kernel(args).dir(sid) / "sources-staging" / new_id("stg")
         manifest = csrc.validate_resources(selection["notebook"]["id"], expected, caps,
-                                           kernel(args).dir(sid) / "sources", wait_timeout=args.wait_timeout)
-        k.record_sources(sid, manifest, expected, **_kw(args))
+                                           staging, wait_timeout=args.wait_timeout)
+        k.record_sources(sid, manifest, expected, staged_cache=staging, **_kw(args))
         return printj({k2: manifest[k2] for k2 in ("manifest_version", "complete", "summary", "resources",
                                                     "unexpected_sources", "cli_version")})
     if sub == "sources-ask":
@@ -1706,6 +1713,10 @@ def main(argv=None) -> int:
             k = kernel(args)
             with session_lock(k.dir(args.session)):
                 k._recover_state(args.session)
+                if args.cmd in EXAM_LOCKED_COMMANDS or getattr(args, "course_cmd", None) == "sources-ask":
+                    # Teaching/evidence side channels stay closed during a course exam.
+                    from runtime.course import assert_no_active_exam
+                    assert_no_active_exam(k.dir(args.session), args.cmd)
                 args.func(args)
         else:
             args.func(args)

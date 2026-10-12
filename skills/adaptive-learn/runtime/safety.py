@@ -35,6 +35,22 @@ def safe_session_dir(sessions_dir: Path, session_id: str) -> Path:
     return candidate
 
 
+def protected_session_path(workspace: Path, resolved: Path) -> bool:
+    """True for files inside a session store other than its learner ``workspace/``.
+
+    The store holds the evidence ledger, journaled state, the assessment vault,
+    private lessons and attempt snapshots. CLI file arguments (which an agent may
+    build from untrusted learner/source text) must neither read nor replace them.
+    """
+    sessions = (workspace.resolve() / ".learning" / "sessions")
+    try:
+        rel = resolved.relative_to(sessions)
+    except ValueError:
+        return False
+    parts = rel.parts
+    return not (len(parts) >= 2 and parts[1] == "workspace")
+
+
 def safe_input_path(workspace: Path, raw: str, *, must_exist: bool = True, max_bytes: int = MAX_INPUT_FILE_BYTES) -> Path:
     """Confine a CLI-provided input file to ``workspace`` and cap its size."""
     p = Path(raw).expanduser()
@@ -42,6 +58,8 @@ def safe_input_path(workspace: Path, raw: str, *, must_exist: bool = True, max_b
     resolved = p.resolve()
     if resolved != root and root not in resolved.parents:
         raise UnsafePathError(f"input_path_outside_workspace:{raw!r}")
+    if protected_session_path(root, resolved):
+        raise UnsafePathError(f"input_path_inside_protected_session_store:{raw!r}")
     if must_exist:
         if not resolved.is_file():
             raise UnsafePathError(f"input_file_not_found:{raw!r}")

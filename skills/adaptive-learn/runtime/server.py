@@ -39,6 +39,8 @@ _SECURITY_HEADERS = (
     ("Referrer-Policy", "no-referrer"),
     ("Cross-Origin-Opener-Policy", "same-origin"),
 )
+# Course endpoints that execute learner code (sandboxed verifier) count against the cap.
+_COURSE_EXEC_PATHS = frozenset({"/api/course/practice/check", "/api/course/exam/submit"})
 # Course app: built bundle only, same-origin API, no third-party code or framing.
 _COURSE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
@@ -158,10 +160,22 @@ def _handler(cfg: ServerConfig):
             if not origin:
                 return True
             try:
-                o = urlparse(origin).hostname
+                parsed = urlparse(origin)
+                o = parsed.hostname
+                o_port = parsed.port or (443 if parsed.scheme == "https" else 80)
             except ValueError:
                 return False
-            return (o or "").lower() in self._LOOPBACK_NAMES
+            if (o or "").lower() not in self._LOOPBACK_NAMES:
+                return False
+            # Same origin means same port too: a page served by another local dev
+            # server (e.g. :3000) must not drive this API.
+            host = self.headers.get("Host") or ""
+            tail = host.rsplit("]", 1)[-1]
+            try:
+                h_port = int(tail.rsplit(":", 1)[1]) if ":" in tail else 80
+            except ValueError:
+                return False
+            return o_port == h_port
 
         def _authed(self) -> bool:
             if cfg.allow_anon and self.client_address[0] in {"127.0.0.1", "::1"}:
@@ -256,6 +270,9 @@ def _handler(cfg: ServerConfig):
         def _course_post(self, path, data):
             from .course_state import UI_SCHEMA_VERSION, CourseStateError
             sid = cfg.course_session
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                # Forces a CORS preflight for any cross-origin browser request.
+                return self._send(415, {"error": "json_content_type_required"})
             if data.get("ui_schema") != UI_SCHEMA_VERSION:
                 return self._send(409, {"error": "stale_ui", "expected_ui_schema": UI_SCHEMA_VERSION,
                                         "message": "Bu interfeys köhnə versiyadır. Səhifəni yenilə."})
@@ -356,15 +373,20 @@ def _handler(cfg: ServerConfig):
             data, err = self._body()
             if err:
                 return self._send(*err)
-            if not run_slots.acquire(blocking=False):
+            # The concurrency cap protects code execution; light course bookkeeping
+            # (resume, activity heartbeats, navigation actions) must not be refused by it.
+            path = urlparse(self.path).path
+            heavy = not path.startswith("/api/course/") or path in _COURSE_EXEC_PATHS
+            if heavy and not run_slots.acquire(blocking=False):
                 return self._send(429, {"error": "too_many_concurrent_runs",
                                         "max_concurrent": cfg.max_concurrent_runs})
             try:
                 return self._dispatch(data)
-            except (ValueError, TypeError, KeyError) as exc:
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
                 return self._send(400, {"error": "invalid_request", "detail": str(exc)[:200]})
             finally:
-                run_slots.release()
+                if heavy:
+                    run_slots.release()
 
         def _dispatch(self, data):
             path = urlparse(self.path).path

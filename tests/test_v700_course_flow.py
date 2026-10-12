@@ -101,6 +101,15 @@ class ApprovalGateTests(CourseCase):
                      if r["payload"].get("event_type") == "course_roadmap_approved"]
         self.assertEqual(len(approvals), 1)
 
+    def test_mission_readiness_is_recomputed_from_current_content(self):
+        out = self.approve()
+        self.assertEqual(out["next_mission"]["blocked_on"], "lesson_content_missing")   # frozen at approval
+        self.author()
+        mission = self.k.state(self.sid)["next_mission"]
+        self.assertTrue(mission["lesson_ready"])
+        self.assertNotIn("blocked_on", mission)
+        self.assertEqual(mission["fresh_items"], 2)
+
     def test_material_change_invalidates_approval_cosmetic_does_not(self):
         self.approve()
         self.author()

@@ -120,6 +120,25 @@ These M4 primitives remain **contracts only**: there is no runnable simulator or
 | Teaching modes | intake, roadmap, socratic, checker, listener, examiner | `modes`, `prompt`, `intake` |
 | HTTP API + web app | Stdlib server (no deps). Session/route/verify/inspect/observability endpoints + split-screen Monaco workspace at `/`. Loopback runs auth-free; beyond loopback needs a token | `serve` |
 | Knowledge graph | Optional graphify `graph.json` provider | `graph-curriculum`, `graph-coverage`, `graph-anchors` |
+| Guarded course | Goal verification, per-resource NotebookLM validation, roadmap approval gate, grounded lessons, guided practice with CI checks, fresh frozen exams with a teaching lock, evidence-derived next mission, resume/accountability; local React app + bridge | `course …` (see [course runtime](skills/adaptive-learn/references/course-runtime.md)) |
+
+## Course mode (quick start)
+
+```bash
+./alearn --workspace . start --topic "NVIDIA NCA-GENL hazırlığı" --goal "…" --stated-background "…" --notebook-id <id>
+./alearn --workspace . course init --session <sid>
+./alearn --workspace . course sources-validate --session <sid> --file resources.json   # per-resource manifest
+./alearn --workspace . course propose-roadmap --session <sid> --file roadmap.json      # awaits learner approval
+./alearn --workspace . course build-ui --session <sid> && ./alearn --workspace . course serve --session <sid> --allow-anon
+```
+
+The learner approves the roadmap in the app (`http://127.0.0.1:8787`); only then can the
+agent author lessons/items (`course author-lesson`, `course author-items`). Every agent turn
+starts with `course turn`. During an exam, teaching and hints are locked in the app, the
+API (HTTP 423) and the agent CLI; refresh, Back, second tabs and restarts resume the same
+attempt. This is workflow enforcement on the learner's own device, not a proctored exam.
+Design, state machine, research basis and limits: [course runtime](skills/adaptive-learn/references/course-runtime.md);
+demo script: [storyboard](skills/adaptive-learn/references/course-demo-storyboard.md).
 
 ## CLI
 
@@ -430,3 +449,4 @@ alone does not import a curriculum or establish learner mastery. See the upstrea
 - **No empirical validation.** The design follows retrieval-practice and spacing research; this implementation has no outcome study or A/B data yet.
 - **Container coverage.** The container path is smoke-proven for python and node; other language images are configured but not yet exercised in CI.
 - **M4 primitives** (`scenario_simulator`, `audio_dialogue`, …) are contracts only.
+- **Course exams** run on the learner's device: the item vault is hidden from the app and agent, not from the device owner, and in-app logs cannot rule out external help. Course checks currently use the sandboxed Python verifier only; engagement time is a heuristic that under-counts IDE work.

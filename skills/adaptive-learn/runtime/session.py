@@ -327,7 +327,7 @@ class SessionKernel:
         return {"total": len(cards), "due": due_cards(cards)}
 
     @locked_session
-    def set_roadmap(self, session_id: str, plan: dict) -> dict:
+    def set_roadmap(self, session_id: str, plan: dict, *, _course_internal: bool = False) -> dict:
         """Attach/replace the roadmap on an existing session.
 
         The agentic flow gathers intake first, so the authoritative roadmap is
@@ -337,6 +337,11 @@ class SessionKernel:
         from .learning_workspace import normalize_plan, create_workspace
         d = self.dir(session_id)
         self.ledger(session_id).require_integrity()
+        if (d / "course-state.json").exists() and not _course_internal:
+            # A course binds the roadmap to an approval; replacing it here would
+            # change what the learner approved without a review.
+            raise ValueError("this session is a course: use `alearn course propose-roadmap` "
+                             "so the change goes through learner approval")
         session = read_json(d / "session.json")
         contract = read_json(d / "learning-contract.json")
         norm = normalize_plan(session["topic"], contract.get("goal"), plan)

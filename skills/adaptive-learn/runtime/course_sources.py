@@ -23,13 +23,14 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .course_state import digest
 from .notebook_cli import provider as _provider
+from .safety import protected_session_path
 from .utils import now_iso
 
 MIN_CONTENT_CHARS = 400
 _SOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,79}")
 _STATUSES_OK = {"validated"}
 RESOURCE_STATUSES = ("validated", "missing", "failed_import", "processing",
-                     "unreadable", "empty", "partial", "cli_unavailable")
+                     "unreadable", "empty", "partial", "identity_mismatch", "cli_unavailable")
 # Commands this adapter knows how to call per provider. ``nlm`` is only verified
 # for listing in this repository, so authoring operations stay unsupported there.
 _KNOWN = {
@@ -188,6 +189,8 @@ def add_source(notebook_id: str, resource: dict, caps: dict, *, workspace: Path 
             raise ValueError("file source must be a regular, non-symlink file")
         if workspace is not None and not path.resolve().is_relative_to(workspace.resolve()):
             raise ValueError("file source must live inside the learning workspace")
+        if workspace is not None and protected_session_path(workspace, path.resolve()):
+            raise ValueError("file source must not come from a session store (ledger, vault, lessons)")
         argv = ["source", "add", "-n", nid, "--type", "file", "--json"]
         if resource.get("title"):
             argv += ["--title", str(resource["title"])[:200]]
@@ -272,7 +275,8 @@ def validate_resources(notebook_id: str, expected: list[dict], caps: dict, cache
         listing = {"status": "unavailable", "sources": []}
     resources, claimed = [], set()
     for exp in expected:
-        entry = {"key": exp["key"], "expected": {k: exp.get(k) for k in ("kind", "locator", "title", "role", "rights")},
+        entry = {"key": exp["key"], "expected": {k: exp.get(k) for k in ("kind", "locator", "title", "role", "rights",
+                                                                         "expect_terms")},
                  "source_id": None, "title": None, "status": None, "issues": [], "duplicates": [],
                  "content_sha256": None, "char_count": 0, "stale": None, "checked_at": now_iso()}
         if listing["status"] != "ready":
@@ -308,16 +312,23 @@ def validate_resources(notebook_id: str, expected: list[dict], caps: dict, cache
                 content = text["content"]
                 stripped = content.strip()
                 entry["char_count"] = len(stripped)
-                entry["content_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                entry["content_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()   # exact cached snapshot
+                entry["text_sha256"] = hashlib.sha256(stable_text(content).encode("utf-8")).hexdigest()
                 target = cache_dir / f"{primary['id']}.txt"
                 fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(content)
+                # A URL can stay stable while its content changes (renumbered chapters,
+                # moved pages); expected terms pin the identity to what the course needs.
+                missing_terms = [t for t in exp.get("expect_terms") or [] if _norm_text(t) not in _norm_text(content)]
                 if not stripped:
                     entry["status"] = "empty"
                 elif len(stripped) < min_chars:
                     entry["status"] = "partial"
                     entry["issues"].append(f"content_shorter_than_{min_chars}_chars")
+                elif missing_terms:
+                    entry["status"] = "identity_mismatch"
+                    entry["issues"].append("expected_terms_missing:" + ",".join(missing_terms))
                 else:
                     entry["status"] = "validated"
                 if exp.get("kind") == "url":
@@ -341,9 +352,20 @@ def validate_resources(notebook_id: str, expected: list[dict], caps: dict, cache
                     "duplicates": sum(1 for r in resources if r["duplicates"])},
         "complete": bool(resources) and all(r["status"] in _STATUSES_OK for r in resources),
     }
-    manifest["manifest_version"] = digest("sm", [(r["key"], r["source_id"], r["status"], r["content_sha256"])
+    # Version on the stable text hash: NotebookLM fulltext of PDFs embeds signed image
+    # URLs that change on every fetch, so the raw snapshot hash alone would churn.
+    manifest["manifest_version"] = digest("sm", [(r["key"], r["source_id"], r["status"], r.get("text_sha256"))
                                                 for r in resources])
     return manifest
+
+
+_VOLATILE = re.compile(r"https://lh\d\.googleusercontent\.com/\S+"
+                       r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+
+
+def stable_text(content: str) -> str:
+    """Text with per-fetch artefacts (signed image URLs, image UUIDs) removed."""
+    return re.sub(r"\s+", " ", _VOLATILE.sub("", content or "")).strip()
 
 
 def _norm_text(text: str) -> str:

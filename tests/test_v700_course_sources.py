@@ -182,6 +182,36 @@ class SourcesTests(unittest.TestCase):
             self.assertEqual(csrc.find_quote(cli.cache, m, "src-ok-000001", "readable content about cosine")["reason"],
                              "cached_text_changed_revalidate_sources")
 
+    def test_manifest_version_ignores_per_fetch_signed_image_urls(self):
+        # Observed live: PDF fulltext embeds signed image URLs that differ on each fetch.
+        base = "Same chapter text about cosine similarity. " * 20
+        first = scenario(fulltext={"src-ok-000001": base + "\nhttps://lh3.googleusercontent.com/notebooklm/AAA=w10 "
+                                   "26cff510-5192-480f-a10a-2e8c68d61222"})
+        second = scenario(fulltext={"src-ok-000001": base + "\nhttps://lh3.googleusercontent.com/notebooklm/BBB=w10 "
+                                    "ef4cb444-078f-4f07-b0dd-38954586b636"})
+        exp = [{"key": "good", "kind": "url", "locator": "https://example.org/good"}]
+        with MockCLI(first) as cli:
+            m1 = csrc.validate_resources(NB, exp, csrc.capabilities("notebooklm"), cli.cache)
+        with MockCLI(second) as cli:
+            m2 = csrc.validate_resources(NB, exp, csrc.capabilities("notebooklm"), cli.cache)
+        self.assertNotEqual(m1["resources"][0]["content_sha256"], m2["resources"][0]["content_sha256"])
+        self.assertEqual(m1["resources"][0]["text_sha256"], m2["resources"][0]["text_sha256"])
+        self.assertEqual(m1["manifest_version"], m2["manifest_version"])
+
+    def test_same_url_with_different_content_is_an_identity_mismatch(self):
+        # Mirrors a real case: a textbook renumbered its chapters, so a stable PDF URL now
+        # holds a different chapter. URL identity alone must not count as validated.
+        expected = [{"key": "good", "kind": "url", "locator": "https://example.org/good", "expect_terms": ["cosine"]},
+                    {"key": "dup", "kind": "url", "locator": "https://example.org/dup", "expect_terms": ["transformer attention"]}]
+        with MockCLI(scenario()) as cli:
+            caps = csrc.capabilities("notebooklm")
+            m = csrc.validate_resources(NB, expected, caps, cli.cache, wait_timeout=1)
+        status = {r["key"]: r for r in m["resources"]}
+        self.assertEqual(status["good"]["status"], "validated")
+        self.assertEqual(status["dup"]["status"], "identity_mismatch")
+        self.assertIn("expected_terms_missing:transformer attention", status["dup"]["issues"])
+        self.assertFalse(m["complete"])
+
     def test_authoring_calls_use_validated_ids_and_option_terminator(self):
         with MockCLI(scenario()) as cli:
             caps = csrc.capabilities("notebooklm")

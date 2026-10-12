@@ -12,6 +12,7 @@ Nothing here trusts chat memory or client-side state.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 from datetime import UTC, datetime, timedelta
@@ -165,9 +166,13 @@ class CourseKernel:
         p = d / MANIFEST_FILE
         return read_json(p) if p.exists() else None
 
-    def _lesson(self, d, node) -> dict | None:
+    def _lesson(self, d, node, state) -> dict | None:
+        """Only a committed lesson counts; a file left by an interrupted install is ignored."""
         p = self._lesson_path(d, node)
-        return read_json(p) if p.exists() else None
+        if not p.exists():
+            return None
+        lesson = read_json(p)
+        return lesson if state["content_versions"].get(node) == lesson.get("content_version") else None
 
     def _items(self, d, node) -> list[dict]:
         v = self._vault(d, node)
@@ -191,7 +196,28 @@ class CourseKernel:
                    for r in led.verified_records())
 
     def _reconcile(self, d, led, state):
-        """Complete a finalization whose evidence reached the ledger before a crash."""
+        """Repair interrupted multi-step operations before any action runs.
+
+        1. The installed roadmap must be the version the state knows about. A drift
+           (crash between the workspace install and the course-state commit, or any
+           out-of-band replacement) re-opens approval instead of teaching on it.
+        2. A finalization whose evidence reached the ledger before a crash is completed.
+        """
+        plan_path = d / "workspace" / "roadmap.json"
+        if state["roadmap_version"] and plan_path.exists():
+            plan = read_json(plan_path)
+            installed = cs.roadmap_version(plan) if plan.get("status") != "needs_curriculum_research" else None
+            if installed and installed != state["roadmap_version"]:
+                if state["phase"] in cs.TEACHING_LOCKED_PHASES:
+                    raise CourseStateError("invalid_state", "roadmap changed during an exam; restore it or abandon the attempt")
+                previous = state["approved_roadmap_version"]
+                state["roadmap_version"] = installed
+                state["review_required"] = {"reason": "roadmap_changed_without_review", "previous_version": previous,
+                                            "new_version": installed, "changes": [{"change": "out_of_band_install"}],
+                                            "at": now_iso()}
+                cs.set_phase(state, "roadmap_awaiting_approval", now_iso())
+                self._commit(d, led, state, {"event_type": "course_roadmap_drift_detected",
+                                             "installed_version": installed, "approved_version": previous})
         att_id = state["active_attempt_id"]
         if not att_id:
             return
@@ -283,7 +309,10 @@ class CourseKernel:
         return self._mutate(sid, "record_diagnostic", fn, **kw)
 
     # ------------------------------------------------------------------ sources
-    def record_sources(self, sid, manifest: dict, expected: list[dict], **kw):
+    def record_sources(self, sid, manifest: dict, expected: list[dict], *, staged_cache: Path | None = None, **kw):
+        """Commit a manifest. ``staged_cache`` (from validation) is promoted into the
+        grounding cache only after the revision check and phase guard pass, so a refused
+        commit can never change the text that lesson quotes are verified against."""
         if not isinstance(manifest, dict) or not isinstance(manifest.get("resources"), list):
             raise CourseStateError("phase_forbids_action", "manifest must come from course_sources.validate_resources")
 
@@ -292,16 +321,26 @@ class CourseKernel:
                 cs.guard(state, "begin_sources")
                 cs.set_phase(state, "source_preparation", now_iso())
             cs.guard(state, "record_sources")
+            if staged_cache is not None:
+                staged = Path(staged_cache)
+                if not staged.resolve().is_relative_to((d / "sources-staging").resolve()):
+                    raise CourseStateError("phase_forbids_action", "staged cache must live in this session's staging area")
+                target = d / "sources"
+                target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                for f in staged.glob("*.txt"):
+                    os.replace(f, target / f.name)
             stored = {**manifest, "expected": expected}
             state["source_manifest_version"] = manifest.get("manifest_version")
-            state["source_refs"] = [{"key": r["key"], "source_id": r["source_id"], "title": r.get("title"),
+            # A curated expected title beats NotebookLM's (PDFs are titled by their URL).
+            state["source_refs"] = [{"key": r["key"], "source_id": r["source_id"],
+                                     "title": (r.get("expected") or {}).get("title") or r.get("title"),
                                      "url": (r.get("expected") or {}).get("locator"), "status": r["status"],
                                      "content_sha256": r["content_sha256"], "stale": r.get("stale"),
                                      "issues": r.get("issues", [])} for r in manifest["resources"]]
             # Lessons grounded on a source that is no longer validated must be re-checked.
             ok = {r["source_id"] for r in manifest["resources"] if r["status"] == "validated"}
             for node in list(state["content_versions"]):
-                lesson = self._lesson(d, node)
+                lesson = self._lesson(d, node, state)
                 cited = {ref.get("source_id") for part in ("explanation", "why", "worked_example", "alternative_explanation")
                          for ref in (lesson or {}).get(part, {}).get("refs", []) if ref.get("grounding") == "source"}
                 if cited - ok:
@@ -341,10 +380,10 @@ class CourseKernel:
             version = cs.roadmap_version(norm)
             if version == state["roadmap_version"] and old is not None:
                 return {"roadmap_version": version, "changed": False}, None, None
-            self.sk.set_roadmap(sid, plan)          # journals + preserves submissions
+            self.sk.set_roadmap(sid, plan, _course_internal=True)   # journals + preserves submissions
             installed = read_json(d / "workspace" / "roadmap.json")
             for n in installed["nodes"]:             # lessons survive a roadmap revision
-                lesson = self._lesson(d, n["id"])
+                lesson = self._lesson(d, n["id"], state)
                 if lesson:
                     self._materialize_lesson_files(d, n, lesson)
             changes = cs.diff_roadmaps(old, installed)
@@ -404,7 +443,7 @@ class CourseKernel:
             cs.guard(state, "install_content")
             node = self._node(self._plan(d), node_id)
             try:
-                items = cc.validate_items(payload, node, self._lesson(d, node_id))
+                items = cc.validate_items(payload, node, self._lesson(d, node_id, state))
             except cc.ContentError as e:
                 raise CourseStateError("phase_forbids_action", f"content_invalid: {e}")
             exposed = set(state["exposure"].get(node_id, []))
@@ -473,7 +512,7 @@ class CourseKernel:
             node = self._node(plan, node_id)
             if not self._available(state, node):
                 raise CourseStateError("phase_forbids_action", "prerequisites not yet demonstrated: " + ", ".join(node["requires"]))
-            if not self._lesson(d, node_id):
+            if not self._lesson(d, node_id, state):
                 raise CourseStateError("lesson_missing", "lesson content for this node is not authored yet")
             if state["active_node_id"] != node_id:
                 state["support_provenance"] = cs.empty_support()
@@ -493,7 +532,7 @@ class CourseKernel:
             cs.guard(state, "help")
             if node_id != state["active_node_id"]:
                 raise CourseStateError("phase_forbids_action", "help is for the active mission node")
-            lesson = self._lesson(d, node_id)
+            lesson = self._lesson(d, node_id, state)
             if not lesson:
                 raise CourseStateError("lesson_missing")
             sp = state["support_provenance"]
@@ -545,7 +584,7 @@ class CourseKernel:
             cs.guard(state, "self_explanation")
             if node_id != state["active_node_id"]:
                 raise CourseStateError("phase_forbids_action", "self-explanation is for the active node")
-            lesson = self._lesson(d, node_id)
+            lesson = self._lesson(d, node_id, state)
             coverage = grade_explanation(text, " ".join(lesson["self_explanation_key_terms"] * 2), threshold=0.6)
             sub = self._module(d, node_id) / "submission" / "self-explanation.md"
             sub.write_text(text.strip() + "\n", encoding="utf-8")
@@ -572,7 +611,7 @@ class CourseKernel:
             cs.set_phase(state, "practice", now_iso())
             state["resume_checkpoint"] = {"phase": "practice", "route": f"#/practice/{node_id}", "node_id": node_id,
                                           "attempt_id": None, "at": now_iso()}
-            lesson = self._lesson(d, node_id)
+            lesson = self._lesson(d, node_id, state)
             return ({"node_id": node_id, "practice": prog["practice"], "prompt_md": lesson["practice"]["prompt_md"],
                      "file": str(self._module(d, node_id) / "submission" / lesson["practice"]["entry"])},
                     {"event_type": "course_practice_started", "node_id": node_id}, None)
@@ -583,7 +622,7 @@ class CourseKernel:
             cs.guard(state, "practice_check")
             if node_id != state["active_node_id"]:
                 raise CourseStateError("phase_forbids_action", "practice check is for the active node")
-            lesson = self._lesson(d, node_id)
+            lesson = self._lesson(d, node_id, state)
             entry = lesson["practice"]["entry"]
             path = self._module(d, node_id) / "submission" / entry
             code = path.read_text(encoding="utf-8") if path.is_file() and not path.is_symlink() else ""
@@ -671,7 +710,7 @@ class CourseKernel:
                                               "Bu müstəqil yoxlamadır: tətbiqdə izah və ipucu bağlıdır.\n", encoding="utf-8")
             if not (exam_dir / item["entry"]).exists():
                 (exam_dir / item["entry"]).write_text(item["starter_code"], encoding="utf-8")
-            return ({"resumed": False, "attempt": self._public_attempt(d, att)},
+            return ({"resumed": False, "attempt_id": att_id, "attempt": self._public_attempt(d, att)},
                     {"event_type": "course_exam_started", "attempt_id": att_id, "node_id": node_id,
                      "item_id": item["item_id"], "item_version": item["item_version"], "fast_track": bool(fast_track)}, None)
         return self._mutate(sid, "start_exam", fn, **kw)
@@ -833,7 +872,14 @@ class CourseKernel:
         state["evidence_refs"].append({"evidence_id": ev_id, "record_id": record["record_id"], "seq": record["seq"],
                                        "attempt_id": att["attempt_id"], "node_id": node_id, "kind": "exam",
                                        "outcome": result["outcome"]})
-        full = read_json(self._attempt_dir(d, att["attempt_id"]) / "result.json")
+        result_path = self._attempt_dir(d, att["attempt_id"]) / "result.json"
+        try:
+            ok = hashlib.sha256(result_path.read_bytes()).hexdigest() == att.get("result_sha256")
+            full = read_json(result_path) if ok else None
+        except (OSError, ValueError):
+            full = None
+        if full is None:   # never trust a changed result file; fall back to the committed summary
+            full = {**result, "checks": [], "misconception_feedback": [], "result_file_untrusted": True}
         state["assessment_result"] = {"attempt_id": att["attempt_id"], "node_id": node_id, "item_id": att["item_id"],
                                       "outcome": result["outcome"], "passed": result["passed"], "total": result["total"],
                                       "by_category": result["by_category"], "checks": full["checks"],
@@ -877,19 +923,21 @@ class CourseKernel:
             cs.guard(state, "abandon_exam")
             if att["status"] not in {"active", "submitted", "scoring_failed"}:
                 raise CourseStateError("phase_forbids_action", "a scored attempt must be finalized, not abandoned")
+            # Everything that can fail is computed before the ledger append.
+            has_lesson = bool(self._lesson(d, att["node_id"], state))
+            mission = self._mission_retry(d, state, att["node_id"], "abandoned")
             att["status"] = "abandoned"
             att["abandoned_reason"] = (reason or "learner_exit")[:200]
             att["events"].append({"status": "abandoned", "at": now_iso()})
+            state["active_attempt_id"] = None
+            state["attempt_status"] = "abandoned"
+            state["assessment_item_version"] = None
+            cs.set_phase(state, "teaching" if has_lesson else "course_generation", now_iso())
+            state["next_mission"] = mission
             led.append("observation", {"capability_id": att["node_id"], "attempt_id": attempt_id,
                                        "item_id": att["item_id"], "outcome": "unknown", "note": "exam_abandoned",
                                        "reason": att["abandoned_reason"], "correctness_checked": False},
                        {"source": "course_exam"})
-            state["active_attempt_id"] = None
-            state["attempt_status"] = "abandoned"
-            state["assessment_item_version"] = None
-            has_lesson = bool(self._lesson(d, att["node_id"]))
-            cs.set_phase(state, "teaching" if has_lesson else "course_generation", now_iso())
-            state["next_mission"] = self._mission_retry(d, state, att["node_id"], "abandoned")
             state["resume_checkpoint"] = {"phase": state["phase"],
                                           "route": f"#/learn/{att['node_id']}" if has_lesson else "#/",
                                           "node_id": att["node_id"], "attempt_id": None, "at": now_iso()}
@@ -938,18 +986,32 @@ class CourseKernel:
                                   "Bunu bilirsənsə, birbaşa yeni tapşırıqla yoxla"],
                    "suggest_fast_track": bool(observed),
                    "uncertainty_az": "Başlanğıc profil təxminidir; ilk müstəqil nəticədən sonra yenilənəcək.",
-                   "lesson_ready": bool(self._lesson(d, n["id"])), "fresh_items": self._fresh_count(d, state, n["id"])}
+                   "lesson_ready": bool(self._lesson(d, n["id"], state)), "fresh_items": self._fresh_count(d, state, n["id"])}
         if not mission["lesson_ready"]:
             mission["blocked_on"] = "lesson_content_missing"
         return mission
 
+    def _plan_safe(self, d) -> dict:
+        # Mission derivation runs after evidence is written (and inside reconcile),
+        # so it must never raise; a missing roadmap degrades to an empty plan.
+        p = d / "workspace" / "roadmap.json"
+        try:
+            return read_json(p) if p.exists() else {"nodes": []}
+        except (OSError, ValueError):
+            return {"nodes": []}
+
+    @staticmethod
+    def _title(plan, node_id) -> str:
+        return next((n.get("title") or node_id for n in plan.get("nodes", []) if n.get("id") == node_id), node_id)
+
     def _mission_after_exam(self, d, state, att, full) -> dict:
-        plan = self._plan(d)
+        plan = self._plan_safe(d)
         node_id, outcome = att["node_id"], full["outcome"]
-        title = self._node(plan, node_id)["title"]
+        title = self._title(plan, node_id)
         hint = self._driver_hint(state["session_id"])
         by_cat = full["by_category"]
-        tally = ", ".join(f"{k}: {v['passed']}/{v['total']}" for k, v in sorted(by_cat.items()))
+        labels = {"core": "əsas", "edge": "kənar hal", "transfer": "transfer", "build": "icra"}
+        tally = ", ".join(f"{labels.get(k, k)} {v['passed']}/{v['total']}" for k, v in sorted(by_cat.items()))
         if outcome == "correct":
             nxt = self._next_open_node(state, plan)
             review_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
@@ -961,7 +1023,7 @@ class CourseKernel:
                                           "24 saatdan sonra qısa yeni tapşırıq nəticənin davamlı olduğunu yoxlayacaq."),
                        "review": {"node_id": node_id, "not_before": review_at}}
             if nxt:
-                mission["lesson_ready"] = bool(self._lesson(d, nxt["id"]))
+                mission["lesson_ready"] = bool(self._lesson(d, nxt["id"], state))
                 if not mission["lesson_ready"]:
                     mission["blocked_on"] = "lesson_content_missing"
         else:
@@ -970,8 +1032,7 @@ class CourseKernel:
         return mission
 
     def _mission_retry(self, d, state, node_id, outcome, *, full=None, tally=None) -> dict:
-        plan = self._plan(d)
-        title = self._node(plan, node_id)["title"]
+        title = self._title(self._plan_safe(d), node_id)
         counts = state["misconception_counts"].get(node_id, {})
         fired = (full or {}).get("misconception_feedback", [])
         recurring = [m for m in fired if counts.get(m["id"], 0) >= 2]
@@ -1001,6 +1062,8 @@ class CourseKernel:
 
     # -------------------------------------------------------- commitments
     def _apply_commitments(self, state, c: dict):
+        if not isinstance(c, dict):
+            raise CourseStateError("phase_forbids_action", "commitments must be an object")
         now = now_iso()
         new = []
         if c.get("weekly_active_minutes") is not None:
@@ -1214,7 +1277,7 @@ class CourseKernel:
             if state["approved_roadmap_version"] != state["roadmap_version"]:
                 raise CourseStateError("roadmap_not_approved")
             node = self._node(self._plan(d), node_id)
-            lesson = self._lesson(d, node_id)
+            lesson = self._lesson(d, node_id, state)
             summary = cc.public_lesson_summary(lesson)
             out = {"node": {k: node.get(k) for k in ("id", "title", "task", "outcomes", "skills", "practice",
                                                     "exam_domain", "requires")}, "lesson": summary,
@@ -1235,18 +1298,33 @@ class CourseKernel:
         nodes = []
         for n in (plan or {}).get("nodes", []):
             nid = n["id"]
-            lesson = self._lesson(d, nid)
+            lesson = self._lesson(d, nid, state)
             passed = self._passed(state, nid)
             status = ("passed" if passed else "active" if nid == state["active_node_id"]
                       else "available" if self._available(state, n) else "locked")
+            locked = state["phase"] in cs.TEACHING_LOCKED_PHASES
             nodes.append({**{k: n.get(k) for k in ("id", "title", "task", "requires", "outcomes", "skills", "practice",
                                                    "source_refs", "exam_domain", "pitfalls", "stage", "estimated_minutes")},
-                          "status": status, "lesson": cc.public_lesson_summary(lesson),
+                          "status": status,
+                          # During an exam no teaching material (criteria, feedback, help history) leaves the runtime.
+                          "lesson": {"status": "locked_during_exam"} if locked else cc.public_lesson_summary(lesson),
                           "fresh_items": self._fresh_count(d, state, nid),
-                          "progress": state["node_progress"].get(nid)})
+                          "progress": None if locked else state["node_progress"].get(nid)})
         att = state["attempts"].get(state["active_attempt_id"]) if state["active_attempt_id"] else None
         manifest = self._manifest(d)
         eng = eng or self.engagement(led)
+        locked = state["phase"] in cs.TEACHING_LOCKED_PHASES
+        mission = dict(state["next_mission"]) if state["next_mission"] and not locked else None
+        if mission and mission.get("node_id") and mission.get("type") != "course_review":
+            # Readiness is recomputed from current content, never frozen at decision time.
+            nid = mission["node_id"]
+            mission["lesson_ready"] = bool(self._lesson(d, nid, state))
+            mission["fresh_items"] = self._fresh_count(d, state, nid)
+            mission.pop("blocked_on", None)
+            if not mission["lesson_ready"]:
+                mission["blocked_on"] = "lesson_content_missing"
+            elif mission["type"] != "next_node" and mission["fresh_items"] == 0:
+                mission["blocked_on"] = "no_fresh_item"
         approved = bool(state["approved_roadmap_version"]) and state["approved_roadmap_version"] == state["roadmap_version"]
         return {
             "ui_schema_version": cs.UI_SCHEMA_VERSION, "state_schema_version": cs.SCHEMA_VERSION,
@@ -1262,8 +1340,9 @@ class CourseKernel:
             "active_node_id": state["active_node_id"],
             "active_attempt": self._public_attempt(d, att) if att else None,
             "attempt_status": state["attempt_status"], "assessment_item_version": state["assessment_item_version"],
-            "support_provenance": state["support_provenance"], "assessment_result": state["assessment_result"],
-            "next_mission": state["next_mission"], "resume_checkpoint": state["resume_checkpoint"],
+            "support_provenance": state["support_provenance"],
+            "assessment_result": None if locked else state["assessment_result"],
+            "next_mission": mission, "resume_checkpoint": state["resume_checkpoint"],
             "learning_commitments": state["learning_commitments"], "accountability": state["accountability"],
             "engagement": eng, "evidence_refs": state["evidence_refs"],
             "sources": {"manifest_version": state["source_manifest_version"],

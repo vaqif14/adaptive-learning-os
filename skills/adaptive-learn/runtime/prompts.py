@@ -88,7 +88,9 @@ STAGE_PROMPTS: dict[str, dict] = {
     },
     "explainer": {
         "name": "The Explainer",
-        "use_when": "You've already tried solving it yourself and are truly stuck on a specific part. Last resort, never the default.",
+        "use_when": ("You've already tried solving it yourself and are truly stuck on a specific part (last resort for a "
+                     "prepared learner). Exception: a novice who says 'Bilmirəm'/'I don't know' first gets a short "
+                     "explanation and a separate worked example, then a fresh independent task (worked-example effect)."),
         "prompt": "I tried [problem] and got stuck at [step]. Explain just that part, at my level.",
         "maps_to": "constrained explain + EXPLAINER LOCK-IN: after any explanation, re-solve from zero unaided before advancing (assisted work is never mastery)",
     },

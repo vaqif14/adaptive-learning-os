@@ -239,6 +239,17 @@ def _self_test(spec: dict, path: str) -> None:
 
 
 _VERIFIER = PythonVerifier(timeout_sec=3.0)
+_REPORTABLE_ERRORS = frozenset({
+    "ZeroDivisionError", "TypeError", "ValueError", "IndexError", "KeyError", "AttributeError", "NameError",
+    "RecursionError", "OverflowError", "AssertionError", "StopIteration", "UnboundLocalError", "ImportError",
+    "MemoryError", "RuntimeError", "NotImplementedError", "SyntaxError",
+})
+
+
+def _error_name(stderr: str) -> str:
+    m = re.match(r"\s*(\w+)", stderr or "")
+    name = m.group(1) if m else ""
+    return f"{name} xətası" if name in _REPORTABLE_ERRORS else "Kod icra zamanı xəta verdi."
 
 
 def _probe_value(code: str, probe: str) -> str | None:
@@ -265,11 +276,15 @@ def run_checks(code: str, checks: list[dict], *, reveal: bool = True) -> list[di
             if res.timed_out:
                 error = "Vaxt limiti aşıldı (sonsuz dövr ola bilər)."
             elif res.stderr and "trusted_test_failed" not in res.stderr:
-                error = res.stderr.strip().splitlines()[0][:200]
+                error = res.stderr.strip().splitlines()[0][:200] if reveal else _error_name(res.stderr)
             elif res.stderr:
                 inner = re.search(r"trusted_test_failed: (\w+)", res.stderr)
-                if inner and inner.group(1) != "AssertionError":
+                # Only builtin names: a submission could raise a crafted exception class
+                # whose name encodes hidden check inputs.
+                if inner and inner.group(1) in _REPORTABLE_ERRORS and inner.group(1) != "AssertionError":
                     error = f"Kodun yoxlama zamanı {inner.group(1)} xətası verdi."
+                elif inner and inner.group(1) != "AssertionError":
+                    error = "Kodun yoxlama zamanı xəta verdi."
         row = {"id": c["id"], "name": c["name"], "category": c.get("category", "visible"), "passed": passed,
                "feedback": None if passed else c["fail_feedback"], "error": error, "observed": None}
         if not passed and reveal and c.get("probe"):
