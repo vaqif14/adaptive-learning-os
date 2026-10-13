@@ -68,7 +68,8 @@ class StateMachineTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "exam_active", action)
         cs.guard(st, "submit_exam")
         cs.guard(st, "abandon_exam")
-        self.assertEqual(set(cs.permitted_actions(st)), {"submit_exam", "abandon_exam"})
+        # save_answers persists the learner's own non-code answers; it carries no teaching.
+        self.assertEqual(set(cs.permitted_actions(st)), {"submit_exam", "save_answers", "abandon_exam"})
 
     def test_exam_phase_without_attempt_is_inconsistent(self):
         st = approved_state("exam_active")
@@ -105,7 +106,7 @@ class StateMachineTests(unittest.TestCase):
         v0 = {"session_id": SID, "goal": "eski məqsəd", "phase": "onboarding", "created_at": "2026-01-01T00:00:00+00:00",
               "learning_commitments": [{"id": "cm_1", "kind": "weekly_active_minutes", "target": 60, "status": "active"}]}
         migrated, applied = cs.migrate(v0)
-        self.assertEqual(applied, [0])
+        self.assertEqual(applied, [0, 1])          # v0 -> v1 -> v2
         self.assertEqual(migrated["schema_version"], cs.SCHEMA_VERSION)
         self.assertEqual(migrated["goal"]["text"], "eski məqsəd")
         self.assertEqual(migrated["learning_commitments"][0]["id"], "cm_1")   # IDs preserved

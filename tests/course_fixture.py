@@ -125,6 +125,92 @@ EXAM_CORRECT = COSINE_REF
 EXAM_NO_NORMALIZE = "def cosine(a, b):\n    return sum(x * y for x, y in zip(a, b))\n"
 
 
+CONCEPT_NODE = {"id": "vec-ideas", "title": "Oxşarlıq anlayışları", "task": "Kosinus oxşarlığının mənasını izah et.",
+                "requires": [], "outcomes": ["Kosinusun istiqaməti ölçdüyünü izah edə bilir"],
+                "skills": ["istiqamət", "normallaşdırma"], "practice": "seçim və sıralama tapşırıqları",
+                "source_refs": ["r1"], "exam_domain": "Fixture concept domain"}
+
+CONCEPT_ITEMS = {
+    "node_id": "vec-ideas",
+    "items": [
+        {"item_id": "ideas-check-a", "kind": "concept", "title": "Anlayış yoxlaması", "scope": "near_transfer",
+         "difficulty": 1,
+         "prompt_md": "Yeni tapşırıq: kosinus oxşarlığı haqqında aşağıdakı suallara cavab ver.",
+         "questions": [
+             {"id": "q1", "type": "single_choice", "category": "core", "prompt": "Kosinus oxşarlığı nəyi ölçür?",
+              "options": [{"id": "a", "text": "Vektorların uzunluq fərqini"}, {"id": "b", "text": "Ədədlərin cəmini"},
+                          {"id": "c", "text": "Vektorların istiqamət yaxınlığını"}],
+              "answer": "c", "fail_feedback": "Kosinus uzunluğu yox, istiqaməti müqayisə edir.",
+              "misconceptions": {"a": "length-not-direction"}},
+             {"id": "q2", "type": "multi_choice", "category": "core", "prompt": "Hansı ifadələr doğrudur?",
+              "options": [{"id": "a", "text": "Eyni istiqamətli vektorların kosinusu 1-dir"},
+                          {"id": "b", "text": "Kosinus həmişə müsbətdir"},
+                          {"id": "c", "text": "Perpendikulyar vektorların kosinusu 0-dır"}],
+              "answer": ["a", "c"], "fail_feedback": "Əks istiqamətdə kosinus mənfi olur.",
+              "misconceptions": {"b": "always-positive"}},
+             {"id": "q3", "type": "ordering", "category": "transfer",
+              "prompt": "Axtarışda sənədləri seçmək addımlarını sırala.",
+              "options": [{"id": "s1", "text": "Hər sənədlə kosinusu hesabla"},
+                          {"id": "s2", "text": "Sorğunu vektora çevir"},
+                          {"id": "s3", "text": "Ən yüksək nəticələri seç"}],
+              "answer": ["s2", "s1", "s3"], "fail_feedback": "Əvvəl sorğu vektora çevrilməlidir."},
+         ],
+         "misconceptions": [
+             {"id": "length-not-direction", "name": "Uzunluğu istiqamətlə qarışdırmaq",
+              "feedback": "Kosinus vektorun uzunluğunu nəzərə almır; yalnız bucağa baxır."},
+             {"id": "always-positive", "name": "Kosinusun həmişə müsbət olduğunu düşünmək",
+              "feedback": "Əks istiqamətli vektorlarda kosinus -1-ə yaxınlaşır."}]},
+        {"item_id": "ideas-explain-b", "kind": "free_text", "title": "Öz sözlərinlə izah", "scope": "independent_reproduction",
+         "difficulty": 2,
+         "prompt_md": "Yeni tapşırıq: niyə kosinus oxşarlığında dot product uzunluqlara bölünür? 2-4 cümlə yaz.",
+         "rubric": [{"id": "r-normalize", "criterion": "Uzunluqlara bölmənin (normallaşdırmanın) rolunu izah edir"},
+                    {"id": "r-direction", "criterion": "Nəticənin istiqaməti ölçdüyünü göstərir"}],
+         "exemplar": "Dot product uzun vektorlarda böyüyür; uzunluqlara böləndə yalnız istiqamət qalır.",
+         "misconceptions": [{"id": "keyword-only", "name": "Yalnız termin sadalamaq",
+                             "feedback": "Terminləri sadalamaq kifayət deyil; səbəb-nəticəni izah et."}]},
+    ],
+}
+
+CONCEPT_LESSON = {
+    "node_id": "vec-ideas",
+    "objective": "Kosinus oxşarlığının istiqaməti ölçdüyünü izah etmək.",
+    "success_criteria": ["Uzunluq ilə istiqaməti ayırır", "Əks istiqamətin mənfi nəticə verdiyini bilir"],
+    "explanation": {"short": "Kosinus oxşarlığı iki vektorun nə qədər eyni tərəfə baxdığını göstərir, uzunluqları nəzərə almır.",
+                    "body": ("Dot product uzun vektorlarda böyüyür. Onu iki uzunluğun hasilinə böləndə nəticə -1 ilə 1 "
+                             "arasına düşür: 1 eyni istiqamət, 0 perpendikulyar, -1 əks istiqamət deməkdir."),
+                    "refs": [{"source_id": "src-fixture-001", "quote": QUOTE}]},
+    "why": {"text": "Axtarış sistemi sənədin uzunluğuna yox, mənasına (istiqamətinə) görə seçməlidir.",
+            "refs": [{"supplementary": True, "note": "Fixture: pedagogical framing."}]},
+    "worked_example": {"title": "Nümunə: üç vektor", "problem": "u=[2,0], v=[5,0], w=[0,3] üçün hansı cüt eyni istiqamətdədir?",
+                       "steps": ["u və v eyni oxdadır: kosinus 1", "u və w perpendikulyardır: kosinus 0"],
+                       "result": "u ilə v", "refs": [{"source_id": "src-fixture-001", "quote": QUOTE}]},
+    "alternative_explanation": {"text": ("İki oxu düşün: eyni tərəfə baxırlarsa bucaq sıfırdır və kosinus 1 olur. "
+                                         "Oxlardan biri uzun olsa da bucaq dəyişmir."),
+                                "example": "Qısa və uzun şimal oxu: kosinus 1.",
+                                "refs": [{"supplementary": True, "note": "Fixture analogy."}]},
+    "self_explanation_prompt": "Öz sözlərinlə izah et: niyə uzun vektor daha oxşar sayılmamalıdır?",
+    "self_explanation_key_terms": ["istiqamət", "uzunluq", "bölmək"],
+    "practice": {
+        "task_id": "ideas-practice", "kind": "concept",
+        "prompt_md": "Bələdçili praktika: kosinusun mənasını yoxlayan sualı cavablandır.",
+        "hints": ["Eyni istiqamət bucağın sıfır olması deməkdir.", "cos(0) neçədir?"],
+        "questions": [{"id": "p1", "type": "single_choice", "category": "core",
+                       "prompt": "Eyni istiqamətli iki vektorun kosinusu neçədir?",
+                       "options": [{"id": "a", "text": "0"}, {"id": "b", "text": "1"}, {"id": "c", "text": "-1"}],
+                       "answer": "b", "fail_feedback": "Bucaq sıfırdırsa kosinus 1-dir.",
+                       "misconceptions": {"a": "ortho-confusion"}}],
+        "misconceptions": [{"id": "ortho-confusion", "name": "Eyni istiqaməti perpendikulyarla qarışdırmaq",
+                            "feedback": "0 perpendikulyar vektorlar üçündür; eyni istiqamətdə nəticə 1 olur."}],
+    },
+}
+
+
+def concept_roadmap():
+    plan = copy.deepcopy(ROADMAP)
+    plan["nodes"].append(copy.deepcopy(CONCEPT_NODE))
+    return plan
+
+
 def manifest_for(cache_dir: Path) -> dict:
     """A validated single-source manifest with its cached text (mirrors validate_resources output)."""
     import hashlib

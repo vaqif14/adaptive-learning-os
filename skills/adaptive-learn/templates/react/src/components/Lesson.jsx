@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ActionBar, Refs, RoleNote, Steps, Text } from './ui.jsx';
+import { ActionBar, Refs, RoleNote, Steps, Text, resourceStatus } from './ui.jsx';
 
 // Teaching view. Content arrives only through recorded help actions, so every
 // explanation or worked example the learner sees is part of the support provenance.
@@ -18,7 +18,7 @@ export function HelpCard({ item }) {
   </article>;
 }
 
-export default function Lesson({ view, nodeId, info, act, go, confirmExam }) {
+export default function Lesson({ view, nodeId, info, act, go, confirmExam, busy }) {
   const [cards, setCards] = useState([]);
   const [text, setText] = useState('');
   const [coverage, setCoverage] = useState(null);
@@ -38,8 +38,20 @@ export default function Lesson({ view, nodeId, info, act, go, confirmExam }) {
     if (out) setCoverage(out);
   };
   if (!ready) {
+    const st = info.lesson?.status;
+    const snap = info.lesson?.historical_snapshot;
+    const message = st === 'grounding_invalid'
+      ? 'Bu dərsin mənbəsi dəyişib və ya artıq etibarlı deyil. Mənbə yenidən yoxlanana qədər izah, ipucu, praktika və yoxlama bağlıdır — köhnə material cari kimi göstərilmir.'
+      : st === 'capability_changed'
+        ? 'Bu mərhələnin məqsədi yol xəritəsində dəyişib. Köhnə dərs və nəticələr tarixçədə qalır; yeni məqsəd üçün dərs hazırlanmalıdır.'
+        : 'Bu mərhələnin dərs məzmunu hələ hazırlanmayıb. Agent mənbələrə əsaslanan izahı, nümunəni və praktikanı hazırlayandan sonra burada görünəcək.';
     return <section className="lesson"><h1 tabIndex={-1}>{info.node.title}</h1>
-      <p role="status" className="warn">Bu mərhələnin dərs məzmunu hələ hazırlanmayıb. Agent mənbələrə əsaslanan izahı, nümunəni və praktikanı hazırlayandan sonra burada görünəcək.</p>
+      <p role="status" className="warn">{message}</p>
+      {snap && <p className="muted">{snap.label_az} Versiya <code>{snap.content_version}</code>{snap.installed_at ? `, ${new Date(snap.installed_at).toLocaleDateString('az-AZ')}` : ''}.</p>}
+      {info.lesson?.grounding_problems?.length > 0 && <ul className="muted">{info.lesson.grounding_problems.map((p, i) =>
+        <li key={i}>{p.source_id}: {({ source_changed_since_binding: 'mənbə mətni dəyişib', quote_not_found_in_source: 'sitat yeni mətndə yoxdur',
+          cached_text_missing_revalidate_sources: 'mənbə mətni tapılmadı', source_not_in_manifest: 'mənbə manifestdə yoxdur' })[p.reason]
+          || (p.reason?.startsWith('source_status_') ? `mənbənin vəziyyəti: ${resourceStatus(p.reason.slice(14)).toLowerCase()}` : p.reason)}</li>)}</ul>}
     </section>;
   }
   return <section className="lesson" aria-labelledby="lesson-title">
@@ -53,8 +65,8 @@ export default function Lesson({ view, nodeId, info, act, go, confirmExam }) {
     {!sp.explanation_shown && !sp.worked_example_shown && cards.length === 0 &&
       <div className="card entry"><h2>Bu mövzu sənə nə qədər tanışdır?</h2>
         <div className="entry-actions">
-          <button type="button" className="primary" onClick={() => help('explain')}>Bilmirəm — qısa izah et</button>
-          <button type="button" onClick={() => confirmExam(nodeId, true)}>Bunu bilirəm — yeni tapşırıqla yoxla</button>
+          <button type="button" className="primary" disabled={busy} onClick={() => help('explain')}>Bilmirəm — qısa izah et</button>
+          <button type="button" disabled={busy} onClick={() => confirmExam(nodeId, true)}>Bunu bilirəm — yeni tapşırıqla yoxla</button>
         </div>
         <p className="muted">Birbaşa yoxlama görmədiyin yeni tapşırıqdır; keçməsən, izahdan davam edəcəyik.</p>
       </div>}
@@ -64,12 +76,12 @@ export default function Lesson({ view, nodeId, info, act, go, confirmExam }) {
         <h2><label htmlFor="self-text">Öz sözlərinlə izah et</label></h2>
         <p>{info.self_explanation_prompt}</p>
         <textarea id="self-text" rows={4} value={text} onChange={e => setText(e.target.value)} minLength={10} required />
-        <button type="submit" disabled={text.trim().length < 10}>Göndər</button>
+        <button type="submit" disabled={busy || text.trim().length < 10}>Göndər</button>
         {coverage && <div role="status" className="coverage">
           <p>Açar anlayışların əhatəsi: {Math.round(coverage.coverage * 100)}%.{coverage.missed?.length ? ` Toxunmadığın anlayışlar: ${coverage.missed.join(', ')}.` : ''}</p>
           <p className="muted">{coverage.note_az}</p></div>}
       </form>}
-    <ActionBar actions={{
+    <ActionBar busy={busy} actions={{
       now: { onClick: () => (step === 'self' ? begin() : help(nextHelp)), hint: step === 'self' ? 'Bələdçili praktikaya keç' : 'Növbəti izah addımı' },
       why: { onClick: () => help('why'), hint: 'Bu mövzu məqsədin üçün niyə vacibdir' },
       help: { onClick: () => help(nextHelp), hint: nextHelp === 'alternative' ? 'Başqa yolla izah' : 'İzah / nümunə' },

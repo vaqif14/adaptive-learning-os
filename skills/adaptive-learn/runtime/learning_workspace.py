@@ -59,7 +59,10 @@ def normalize_plan(topic: str, goal: str | None, plan: dict | None) -> dict:
             normalized["estimated_minutes"] = node["estimated_minutes"]
         nodes.append(normalized)
         seen.add(nid)
-    return {"topic": topic, "goal": goal, "status": plan.get("status", "proposed"), "sources": sources, "nodes": nodes}
+    normalized = {"topic": topic, "goal": goal, "status": plan.get("status", "proposed"), "sources": sources, "nodes": nodes}
+    if "generation_provenance" in plan:
+        normalized["generation_provenance"] = plan["generation_provenance"]
+    return normalized
 
 
 def page(title: str, content: str) -> str:
@@ -71,10 +74,32 @@ def page(title: str, content: str) -> str:
 </style><main>{content}</main></html>'''
 
 
-def create_workspace(root: Path, plan: dict, session_id: str) -> dict:
+def create_workspace(root: Path, plan: dict, session_id: str, *, roadmap_only: bool = False) -> dict:
     # Called once inside the transactional session directory; no learner files overwritten.
     root.mkdir(exist_ok=False)
     write_json(root / "roadmap.json", plan)
+    if roadmap_only:
+        # A proposed map exposes intended outcomes, never lesson pages or a
+        # runnable teaching app. Links stay within this one static document.
+        cards, details = [], []
+        for i, node in enumerate(plan["nodes"], 1):
+            nid = escape(node["id"], quote=True)
+            deps = ", ".join(node["requires"]) or "Başlanğıc"
+            cards.append(f'<article class="node"><span class="tag">Mərhələ {i:02}</span>'
+                         f'<a href="#node-{nid}">{escape(node["title"])}</a>'
+                         f'<small>Əvvəl: {escape(deps)} · Təsdiq gözləyir</small></article>')
+            outcomes = "".join(f"<li>{escape(x)}</li>" for x in node.get("outcomes", []))
+            details.append(f'<section id="node-{nid}"><h2>{escape(node["title"])}</h2>'
+                           f'<p>{escape(node["task"])}</p><ul>{outcomes}</ul>'
+                           '<a href="#roadmap">↑ Yol xəritəsi</a></section>')
+        (root / "index.html").write_text(page(plan["topic"],
+            '<span class="tag">Yol xəritəsi · Təsdiq gözləyir</span>'
+            f'<h1>{escape(plan["topic"])}</h1><p>{escape(plan["goal"] or "Məqsəd dəqiqləşdirilməlidir")}</p>'
+            '<p>Planı nəzərdən keçir. Dərs və praktika workspace-i bu versiya learner tərəfindən təsdiqlənəndən sonra hazırlanacaq.</p>'
+            f'<section class="path" id="roadmap">{"".join(cards)}</section>{"".join(details)}'
+            '<footer>Bu, təklif olunan plandır; dərs, completion və ya competence evidence deyil.</footer>'), encoding="utf-8")
+        return {"directory": str(root.resolve()), "index_html": str((root / "index.html").resolve()),
+                "roadmap_json": str((root / "roadmap.json").resolve())}
     (root / "resources").mkdir()
     (root / "resources" / "SOURCES.md").write_text("# Mənbələr\n\n" + "\n".join(plan["sources"]) + "\n", encoding="utf-8")
     cards = []
@@ -118,5 +143,5 @@ def create_workspace(root: Path, plan: dict, session_id: str) -> dict:
     write_json(frontend / "src" / "data" / "roadmap.json", {**plan, "workspace_directory": str(root.resolve())})
     (frontend / ".gitignore").write_text("node_modules/\ndist/\n", encoding="utf-8")
     with (root / "README.md").open("a", encoding="utf-8") as f:
-        f.write("\nReact interfeysi: frontend/ (npm install, npm run dev). Dərslər və tapşırıq şərtləri burada; praktik iş (kod, mətn, həll, qeyd — tapşırığın tələb etdiyi formada) submission/ daxilində.\n")
+        f.write("\nReact interfeysi: frontend/. Hazır local UI üçün `alearn course serve --session <id>` istifadə edin; source development üçün mövcud Node dependencies tələb olunur. Dərslər və tapşırıq şərtləri burada; praktik iş (kod, mətn, həll, qeyd — tapşırığın tələb etdiyi formada) submission/ daxilində.\n")
     return {"frontend_directory": str(frontend.resolve()), "directory": str(root.resolve()), "index_html": str((root / "index.html").resolve()), "roadmap_json": str((root / "roadmap.json").resolve())}

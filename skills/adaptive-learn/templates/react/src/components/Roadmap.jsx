@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { NODE_STATUS, resourceStatus } from './ui.jsx';
+import { LESSON_STATUS, NODE_STATUS, resourceStatus } from './ui.jsx';
 
 const COL = 236, ROW = 176, CARD_W = 208, CARD_H = 128;   // CARD_H must match .node height in styles.css
 
@@ -48,7 +48,7 @@ export default function Roadmap({ nodes, selected, onSelect }) {
               <span className="number">MƏRHƏLƏ {String(i + 1).padStart(2, '0')}</span>
               <strong>{n.title}</strong>
               <small><span className={`badge ${n.status}`}>{NODE_STATUS[n.status]}</span>
-                {n.lesson?.status === 'ready' ? ' · dərs hazırdır' : ' · dərs hazır deyil'}</small>
+                {` · ${LESSON_STATUS[n.lesson?.status] || LESSON_STATUS.missing}`}</small>
               <small className="prereq">{(n.requires || []).length
                 ? `Əvvəl: ${n.requires.map(r => byId[r]?.title || r).join(', ')}` : 'Başlanğıc mərhələ'}</small>
             </button>
@@ -76,7 +76,10 @@ export function NodeDetail({ node, nodes, sources }) {
       ? `${srcByKey[k].title || srcByKey[k].url} — ${resourceStatus(srcByKey[k].status)}${srcByKey[k].stale ? ' (köhnəlmiş ola bilər)' : ''}`
       : `${k} — mənbə manifestində yoxdur`))}
     {list('Harada ilişirlər', node.pitfalls)}
-    <p className="muted">Dərs: {node.lesson?.status === 'ready' ? 'hazırdır' : 'hələ hazırlanmayıb'} · Görülməmiş yoxlama tapşırığı: {node.fresh_items}</p>
+    <p className="muted">Dərs: {LESSON_STATUS[node.lesson?.status] || LESSON_STATUS.missing} · Görülməmiş yoxlama tapşırığı: {node.fresh_items}</p>
+    {node.skill_evidence && <p className="muted">{node.skill_evidence.label_az}</p>}
+    {node.progress?.superseded_passes?.length > 0 && <p className="muted">Əvvəlki məqsəd üzrə keçilmiş nəticə tarixçədə saxlanılıb; yeni məqsəd üçün yeni yoxlama lazımdır.</p>}
+    {node.progress?.upstream_changed && <p className="muted">İlkin şərt mərhələsinin məqsədi dəyişib; bu mərhələdəki öz nəticən qüvvədədir.</p>}
   </aside>;
 }
 
@@ -86,8 +89,22 @@ export function ApprovalPanel({ roadmap, onApprove, busy }) {
   const [days, setDays] = useState(3);
   const [due, setDue] = useState('');
   const changes = roadmap.review_required?.changes || [];
-  const label = c => ({ initial_roadmap: 'İlk təklif', node_added: `Yeni mərhələ: ${c.node}`, node_removed: `Silinən mərhələ: ${c.node}`,
-                        node_changed: `Dəyişən mərhələ: ${c.node} (${(c.fields || []).join(', ')})`, goal_changed: 'Məqsəd dəyişib',
+  const impact = roadmap.review_required?.impact;
+  const titleOf = id => roadmap.nodes.find(n => n.id === id)?.title || id;
+  const effects = impact && !impact.initial ? Object.entries(impact.nodes || {}).flatMap(([id, info]) => {
+    const out = [];
+    if (info.change === 'capability_changed') out.push(`“${titleOf(id)}”: məqsəd dəyişir — əvvəlki nəticə tarixçəyə keçəcək, dərs yenilənəcək və yeni tapşırıqla yenidən yoxlanacaq.`);
+    if (info.change === 'removed') out.push(`“${id}”: mərhələ çıxarılır — nəticələri tarixçədə qalır.`);
+    if (info.change === 'prerequisites_changed') out.push(`“${titleOf(id)}”: ilkin şərtlər dəyişir — öz nəticən qalır, sıra yenilənir.`);
+    if (info.unverified) out.push(`“${titleOf(id)}”: köhnə versiyadan miras qalan məqsədi yoxlamaq mümkün olmadı — nəticən saxlanılır; əmin olmaq üçün yeni tapşırıqla yoxlana bilər.`);
+    if (info.upstream_changed) out.push(`“${titleOf(id)}”: ilkin şərti dəyişir — öz nəticən qüvvədə qalır, açılması yenidən ilkin şərtdən asılı olacaq.`);
+    return out;
+  }) : [];
+  const FIELD = { id: 'identifikator', title: 'ad', task: 'tapşırıq', requires: 'ilkin şərtlər', outcomes: 'nəticələr',
+                  skills: 'bacarıqlar', practice: 'praktika', source_refs: 'mənbələr', exam_domain: 'imtahan sahəsi' };
+  const nodeTitle = id => roadmap.nodes.find(n => n.id === id)?.title || id;
+  const label = c => ({ initial_roadmap: 'İlk təklif', node_added: `Yeni mərhələ: “${nodeTitle(c.node)}”`, node_removed: `Çıxarılan mərhələ: ${c.node}`,
+                        node_changed: `Dəyişən mərhələ: “${nodeTitle(c.node)}” (${(c.fields || []).map(f => FIELD[f] || f).join(', ')})`, goal_changed: 'Məqsəd dəyişib',
                         sources_changed: 'Mənbələr dəyişib', order_changed: 'Sıra dəyişib' }[c.change] || c.change);
   const submit = e => {
     e.preventDefault();
@@ -102,6 +119,9 @@ export function ApprovalPanel({ roadmap, onApprove, busy }) {
     {roadmap.review_required?.reason === 'material_change' &&
       <p role="alert" className="warn">Yol xəritəsi əvvəl təsdiqlədiyin versiyadan fərqlənir. Dəyişiklikləri nəzərdən keçir.</p>}
     {changes.length > 0 && <ul className="changes">{changes.map((c, i) => <li key={i}>{label(c)}</li>)}</ul>}
+    {effects.length > 0 && <div className="impact" role="note"><h3>Təsdiqin proqresinə təsiri</h3>
+      <ul>{effects.map((e, i) => <li key={i}>{e}</li>)}</ul>
+      <p className="muted small">Heç nə silinmir: əvvəlki nəticələr və sübutlar tarixçədə qalır.</p></div>}
     <fieldset><legend>Razılaşdığımız vaxt (sonra dəyişə bilərsən)</legend>
       <label>Həftədə neçə gün <input type="number" min="1" max="7" value={days} onChange={e => setDays(e.target.value)} required /></label>
       <label>Həftədə aktiv dəqiqə <input type="number" min="15" max="1500" step="15" value={minutes} onChange={e => setMinutes(e.target.value)} required /></label>

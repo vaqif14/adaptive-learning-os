@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ActionBar, RoleNote, Steps, Text } from './ui.jsx';
+import { ActionBar, QuestionForm, RoleNote, Steps, Text } from './ui.jsx';
 import { HelpCard } from './Lesson.jsx';
 
 export function CheckList({ checks, title }) {
@@ -17,11 +17,64 @@ export function CheckList({ checks, title }) {
   </section>;
 }
 
-export default function Practice({ view, nodeId, info, act, confirmExam }) {
+export default function Practice(props) {
+  const { info } = props;
+  if (!info?.practice) return <p role="status">Praktika yüklənir…</p>;
+  return info.practice.kind && info.practice.kind !== 'python' ? <ConceptPractice {...props} /> : <CodePractice {...props} />;
+}
+
+function PracticeResult({ result, alt, onExam, busy }) {
+  if (!result) return null;
+  return <div className={`card result ${result.passed ? 'ok' : 'fail'}`} role="status" aria-live="polite">
+    <CheckList checks={result.checks} title="Yoxlama nəticəsi" />
+    {/* Per-check lines are already in the CI list; show only the diagnosis lines here. */}
+    <ul className="feedback">{result.feedback_az.filter(f => !f.startsWith('✗')).map((f, i) => <li key={i}>{f}</li>)}</ul>
+    {result.method_change && <button type="button" disabled={busy} onClick={alt}>Başqa yolla izah et</button>}
+    {result.passed && <button type="button" className="primary" disabled={busy} onClick={onExam}>Müstəqil yoxlamaya keç</button>}
+  </div>;
+}
+
+// Concept/scenario practice: answered in the app, graded deterministically by the key,
+// formative only (recorded as assisted/weak evidence, never mastery).
+function ConceptPractice({ view, nodeId, info, act, confirmExam, busy }) {
+  const [answers, setAnswers] = useState({});
+  const [result, setResult] = useState(null);
+  const [hints, setHints] = useState([]);
+  const help = kind => async () => { const out = await act('/api/course/help', { node: nodeId, kind }); if (out) setHints(h => [...h, out]); };
+  const check = async e => {
+    e?.preventDefault();
+    const out = await act('/api/course/practice/answer', { node: nodeId, answers });
+    if (out) setResult(out);
+  };
+  const sp = view.support_provenance;
+  const pr = info.practice;
+  return <section className="practice" aria-labelledby="practice-title">
+    <p className="eyebrow">Bələdçili praktika · anlayış</p>
+    <h1 id="practice-title" tabIndex={-1}>{info.node.title}</h1>
+    <Steps current="practice" />
+    <form className="card" onSubmit={check}>
+      <h2>Tapşırıq</h2><Text value={pr.prompt_md} />
+      {pr.scenario_md && <div className="scenario"><h3>Ssenari</h3><Text value={pr.scenario_md} /></div>}
+      <QuestionForm questions={pr.questions} value={answers} onChange={setAnswers} idPrefix="practice" disabled={busy} />
+      <button type="submit" className="primary" disabled={busy}>Yoxla</button>
+      <p className="muted">Bu praktika köməkli sayılır{sp.hints_count ? ` (${sp.hints_count} ipucu istifadə edilib)` : ''}; cavablar dərhal açarla yoxlanır və səhv seçimin arxasındakı anlaşılmazlıq göstərilir.</p>
+    </form>
+    {hints.map((h, i) => <HelpCard key={i} item={h} />)}
+    <PracticeResult result={result} alt={help('alternative')} onExam={() => confirmExam(nodeId, false)} busy={busy} />
+    <ActionBar busy={busy} actions={{
+      why: { onClick: help('why'), hint: 'Bu bacarıq niyə vacibdir' },
+      help: { onClick: help('hint'), hint: `İpucu (${pr.hint_count} səviyyə)` },
+      check: { onClick: check, hint: 'Cavabları yoxla' },
+      next: { onClick: () => confirmExam(nodeId, false), hint: 'Yeni, köməksiz tapşırıq' },
+    }} />
+    <RoleNote role="Checker (yoxlayan)" text="cavabını açarla yoxlayır və səhvin ehtimal olunan səbəbini deyir; düzgün cavabı əvvəlcədən göstərmir." />
+  </section>;
+}
+
+function CodePractice({ view, nodeId, info, act, confirmExam, busy }) {
   const [result, setResult] = useState(null);
   const [hints, setHints] = useState([]);
   const [copied, setCopied] = useState(false);
-  if (!info?.practice) return <p role="status">Praktika yüklənir…</p>;
   const file = info.practice.file;
   const hint = async () => { const out = await act('/api/course/help', { node: nodeId, kind: 'hint' }); if (out) setHints(h => [...h, out]); };
   const alt = async () => { const out = await act('/api/course/help', { node: nodeId, kind: 'alternative' }); if (out) setHints(h => [...h, out]); };
@@ -41,14 +94,8 @@ export default function Practice({ view, nodeId, info, act, confirmExam }) {
       <p className="muted">Bu praktika köməkli sayılır{sp.hints_count ? ` (${sp.hints_count} ipucu istifadə edilib)` : ''}; müstəqil bacarığı sonrakı yeni tapşırıq göstərəcək.</p>
     </div>
     {hints.map((h, i) => <HelpCard key={i} item={h} />)}
-    {result && <div className={`card result ${result.passed ? 'ok' : 'fail'}`} role="status" aria-live="polite">
-      <CheckList checks={result.checks} title="Yoxlama nəticəsi" />
-      {/* Per-check lines are already in the CI list; show only the diagnosis lines here. */}
-      <ul className="feedback">{result.feedback_az.filter(f => !f.startsWith('✗')).map((f, i) => <li key={i}>{f}</li>)}</ul>
-      {result.method_change && <button type="button" onClick={alt}>Başqa yolla izah et</button>}
-      {result.passed && <button type="button" className="primary" onClick={() => confirmExam(nodeId, false)}>Müstəqil yoxlamaya keç</button>}
-    </div>}
-    <ActionBar actions={{
+    <PracticeResult result={result} alt={alt} onExam={() => confirmExam(nodeId, false)} busy={busy} />
+    <ActionBar busy={busy} actions={{
       now: { onClick: copy, hint: 'Fayl yolunu kopyala və redaktorda aç' },
       why: { onClick: why, hint: 'Bu bacarıq niyə vacibdir' },
       help: { onClick: hint, hint: `İpucu (${info.practice.hint_count} səviyyə)` },

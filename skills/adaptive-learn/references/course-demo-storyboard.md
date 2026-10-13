@@ -1,43 +1,42 @@
-# Course demo — screen-recording storyboard (≈5 min 30 s)
+# Course demo — screen-recording storyboard (v7.1, ≈4 min)
 
-Everything shown is real system behaviour recorded on 2026-10-12 against the
-installed NotebookLM CLI 0.7.3 and the local course app, except where a frame
-is labelled **HAZIRLANMIŞ CAVAB (DEMO)**: those learner answers were written by
-the E2E driver (`tests/e2e/course_ui_e2e.py`) to make the run repeatable. No
-delayed-retention result, learner study or efficacy number is shown, because
-none exists yet.
+Two kinds of footage, always labelled on screen:
 
-Artifacts (local, gitignored): `.learning/demo-nca-genl/` — `target.json`,
-`resources-v3.json`, `roadmap.json`, `lesson-embeddings.json`, `e2e-run4/*.png`,
-`e2e-run4/*-log.json`, `e2e-run4/export.json`. Session: run 4
-(`sid4.txt`); runs 1–3 are kept as earlier, aborted takes (driver fixes), not
-deleted.
+- **REAL CONTENT (DEMO LEARNER)** — the NCA-GENL course from 2026-10-12 (sources
+  validated in NotebookLM notebook `81a2ab0e…`), restored from a verified backup into a
+  scratch workspace and migrated to schema v2; the original session is untouched
+  (hash-checked). Learner answers are **HAZIRLANMIŞ CAVAB (DEMO)**.
+- **SYNTHETIC FIXTURE** — `tests/e2e/course_ui_e2e.py` on the labelled test course
+  (vectors). Every claim on screen is a typed assertion in `e2e-log.json`.
 
-| # | Time | Screen | Exact narration (Azerbaijani) |
-|---|------|--------|-------------------------------|
-| 1 | 0:00–0:30 | Terminal: `alearn course target …` output; NVIDIA page with the five weighted domains | “Məqsəd konkretdir: NVIDIA-Certified Associate: Generative AI LLMs, kodu NCA-GENL. Rəsmi səhifəni bu gün yoxladıq: beş bölmə və onların çəkiləri — 30, 14, 22, 24 və 10 faiz. Səhifə imtahan versiyasını göstərmir, ona görə sistem də ‘versiya dərc olunmayıb’ yazır və bundan artıq iddia etmir.” |
-| 2 | 0:30–1:05 | Terminal: `course sources-capabilities` (auth: ok, credentials not shown) → `sources-validate`: 5/5 validated, one unexpected `6.pdf` | “Mənbələr quraşdırılmış NotebookLM CLI ilə notebook-a əlavə olunub. Sistem say ilə kifayətlənmir: hər mənbənin idxalını və həqiqətən oxunan mətnini ayrıca yoxlayır. Bir dərslik fəslinin linki eyni qalsa da məzmunu dəyişmişdi — bunu ‘məzmun gözlənilən mövzu deyil’ kimi qeyd etdi, düzgün fəsli əlavə etdik, köhnəsi isə gizlədilmədən ‘gözlənilməyən mənbə’ kimi görünür.” |
-| 3 | 1:05–1:40 | App `#/roadmap` (01-roadmap-desktop.png, 02-roadmap-detail-keyboard.png, 03-roadmap-mobile.png) | “Kurs başlamazdan əvvəl yol xəritəsi gəlir: on iki mərhələ, hər biri bacarıq, nəticə, ilkin şərt, praktika və mənbə ilə. Klaviatura ilə gəzmək olur, telefonda siyahıya çevrilir. Dərs linkini birbaşa açmağa çalışsam belə, təsdiq olmadan sistem məni yol xəritəsinə qaytarır.” |
-| 4 | 1:40–2:00 | Approval form → 04-mission-after-approval.png | “Vaxtı da birlikdə razılaşırıq: həftədə üç gün, yüz iyirmi dəqiqə. ‘Təsdiq edirəm’ — bu versiya və təsdiq anı jurnala yazılır. Yol xəritəsi sonradan mahiyyətcə dəyişsə, təsdiq yenidən istəniləcək.” |
-| 5 | 2:00–2:15 | Mission card | “İndi bir konkret missiya var: embedding-lər və kosinus oxşarlığı. Səbəb də yazılıb: ilkin şərti yoxdur, imtahanın Core ML bölməsinə aiddir. Başlanğıc testdə **HAZIRLANMIŞ CAVAB (DEMO)** ‘10’ idi — yəni dot product-da elementlər toplanıb.” |
-| 6 | 2:15–2:55 | 05-lesson-entry.png → 06-explanation.png → 07-worked-example.png → 08-self-explanation.png | “Öyrənən ‘Bilmirəm’ deyir. Qısa izah gəlir və hər mühüm iddianın altında mənbədən dəqiq sitat var; mənbədə olmayan bənzətmə ‘əlavə izah’ kimi işarələnib. Sonra ayrıca, əl ilə nümunə — imtahan tapşırığı deyil. Sonra öyrənən öz sözləri ilə izah yazır; sistem bunun yalnız açar anlayış əhatəsi olduğunu, düzgünlük qiyməti olmadığını açıq deyir.” |
-| 7 | 2:55–3:45 | 09-practice.png → 10-practice-misconception.png → 11-method-change.png → 12-practice-pass.png | “Praktika öz redaktorunda, öz faylında gedir. **HAZIRLANMIŞ CAVAB (DEMO):** normallaşdırmadan dot product. ‘Yoxla’ CI kimi işləyir: hər yoxlama ayrıca; ‘Sənin nəticən: 10, gözlənilən: 1.0’. Səhv adı ilə göstərilir. Eyni səhv təkrarlananda sistem metodu dəyişir — başqa yolla izah. Düzəliş edilir: 4/4. Amma bu köməkli praktikadır və müstəqil bacarıq sayılmır.” |
-| 8 | 3:45–4:25 | Confirm modal → 13-exam.png → direct `#/learn` attempt + toast → 14-exam-second-tab.png → terminal `course help` → `exam_active` | “İndi görmədiyi yeni tapşırıq: RAG üçün ən yaxın k sənəd. Bu müddətdə izah və ipucu bağlıdır — həm tətbiqdə, həm agentdə. Dərsə keçməyə, geri qayıtmağa, səhifəni yeniləməyə və ikinci pəncərə açmağa çalışıram — hər dəfə eyni cəhdə qayıdır. Agent də kömək etmək istəsə, runtime ‘imtahan davam edir’ deyib imtina edir.” |
-| 9 | 4:25–5:00 | Terminal: server stopped and started → 15-exam-after-restart.png → submit (double click) → 16-result.png | “Serveri tamamilə dayandırıb yenidən başladıram — cəhd itmir, eyni tapşırıqdır. **HAZIRLANMIŞ CAVAB (DEMO)** göndərilir, düyməyə iki dəfə basılır. Gizli yoxlamalar: əsas, kənar hal və görmədiyi transfer halları — 7/7. Sübut bir dəfə yazılıb, ikinci klik heç nə əlavə etməyib.” |
-| 10 | 5:00–5:20 | 17-next-mission.png → 18-progress.png → terminal `ledger-verify` (ok, keyed) | “Növbəti missiya sübutdan çıxır və səbəbi yazılır. Vacib qeyd: bu bir müstəqil nəticədir, ustalıq hələ təsdiqlənməyib — iyirmi dörd saatdan sonra qısa təkrar yoxlama olacaq. Növbəti dərs hələ hazırlanmayıbsa, sistem bunu ‘hazır’ kimi göstərmir. Yenilədikdə və yenidən açdıqda hər şey yerindədir; jurnalın bütövlüyü yoxlanılıb.” |
-| 11 | 5:20–5:40 | Progress card “Bu sistemin sərhədləri” | “Dürüst sərhəd: bu, öyrənənin öz cihazında iş axını nəzarətidir, nəzarət olunan imtahan deyil; tətbiqdə kömək olmaması kənar köməyin olmadığını sübut etmir. Burada uzunmüddətli yadda saxlama və öyrənmə effektivliyi göstərilmir — bunun üçün müqayisə qrupu və gecikmiş test olan pilot lazımdır.” |
+No efficacy, retention or learner-study result is shown, because none exists.
 
-## Shot list commands (reproduce)
+Artifacts (local, gitignored): real content — scratchpad `demo-v710/out-r3/`
+(`transcript.json`, `screenshots/01–05`), content `.learning/demo-nca-genl/v710/content.json`,
+backup `.learning/demo-nca-genl/v710/sess_f033-v1-backup.zip`; synthetic — `e2e-v710-r*/`
+(`e2e-log.json`, `screenshots/01–16`, `trace.zip`; final run `e2e-v710-r6`).
+
+| # | Time | Footage | Screen | Narration (Azerbaijani) |
+|---|------|---------|--------|-------------------------|
+| 1 | 0:00–0:20 | real | NVIDIA page, five domains | “Hədəfi bu gün yenidən yoxladıq: NCA-GENL, beş bölmə — 30, 14, 22, 24, 10 faiz. RAG Core ML bölməsində açıq yazılıb. İmtahan versiyası dərc olunmayıb, biz də iddia etmirik.” |
+| 2 | 0:20–0:45 | real | terminal: migration step of `transcript.json` | “Köhnə kurs yeni versiyaya keçdi: əvvəlki vəziyyət arxivdə saxlanıb, keçilmiş mərhələ və dərs qüvvədədir, görülmüş tapşırıq ‘görülmüş’ kimi tanınır, təkrar yoxlama planlaşdırılıb. Heç nə silinməyib.” |
+| 3 | 0:45–1:05 | real | `01-roadmap-with-concept-node.png` | “Yeni mərhələ əlavə olunur: RAG anlayışları. Təsdiq əvvəlcə nəyin dəyişəcəyini göstərir — yalnız ‘əlavə olundu’; mövcud proqres toxunulmur.” |
+| 4 | 1:05–1:35 | real | `02-lesson.png` | “İzah üç mənbə sitatına əsaslanır və hər sitat runtime-da yoxlanılıb. Mənbə dəyişsə və ya oxunmasa, bu dərs ‘hazır’ görünməz.” |
+| 5 | 1:35–2:00 | real | `03-concept-practice.png` | “Kodsuz praktika. **HAZIRLANMIŞ CAVAB (DEMO):** ‘model yenidən öyrədilir’. Sistem səhvin adını deyir: RAG-i yenidən öyrətmə ilə qarışdırmaq. İpucu, sonra düzgün cavab — amma bu köməkli praktikadır.” |
+| 6 | 2:00–2:30 | real | `04-scenario-exam.png` → `05-scenario-result.png` | “Görmədiyi yeni ssenari: bank çatbotu köhnə faizləri deyir. İzah və ipucu bağlıdır. Nəticə 4/4 — amma ekranda açıq yazılır: seçim sualları tanıma səviyyəli sübutdur, ustalıq deyil. Növbəti gün yeni tapşırıqla təkrar yoxlama var.” |
+| 7 | 2:30–2:50 | synthetic | `06-exam-locked.png` | “İmtahanda geri, irəli, birbaşa link, ikinci pəncərə, serverin yenidən başlaması — hər dəfə eyni cəhd. ‘Niyə’ düyməsi fokuslanır və niyə bağlı olduğunu oxuyur.” |
+| 7b | 2:50–3:05 | synthetic | `11-free-text-awaiting-rubric.png` → `12-free-text-result.png` | “Açıq cavab açar sözlərlə qiymətləndirilmir: rubrika qərarı gözlənilir, kilid qalır. Qərar gələndə ekranda kimin qiymətləndirdiyi və bunun runtime yoxlaması yox, rəy olduğu yazılır.” |
+| 8 | 3:05–3:15 | synthetic | terminal: duplicate check → `13-grounding-invalid.png` | “Eyni tapşırığı başqa adla əlavə etsək, ‘təkrar’ sayılır və yeni sübut vermir. Mənbə oxunmaz olanda dərs bağlanır və yalnız etiketli tarixi nüsxə görünür.” |
+| 9 | 3:10–3:35 | synthetic | `14-capability-impact.png` | “Mərhələnin məqsədi dəyişəndə təsdiq ekranı əvvəlcədən deyir: köhnə nəticə tarixçəyə keçəcək, yeni tapşırıqla yenidən yoxlanacaq. Asılı mərhələnin öz nəticəsi qalır.” |
+| 10 | 3:35–3:55 | synthetic | `15-due-review-mission.png` → `16-progress-reviews.png` | “Bir gün sonra təkrar yoxlama missiyanın önünə keçir, yeni tapşırıqla aparılır və növbəti interval uzanır. Real vaxt keçmədiyi üçün sübut ‘gecikmiş yadda saxlama’ kimi qeyd olunmur.” |
+| 11 | 3:55–4:10 | either | Progress “Bu sistemin sərhədləri” | “Bu, öz cihazında iş axını nəzarətidir, nəzarətli imtahan deyil. Effektivlik burada sübut olunmur — bunun üçün eyni vaxtlı müqayisə qrupu və gecikmiş test olan tədqiqat lazımdır.” |
+
+## Reproduce
 
 ```bash
-D=.learning/demo-nca-genl; SID=<fresh session id>
-./alearn --workspace . course serve --session $SID --allow-anon        # terminal 1
-python3 tests/e2e/course_ui_e2e.py approve --out $D/e2e-rec            # terminal 2
-# author items + lesson after approval (see course-runtime.md §12), then:
-python3 tests/e2e/course_ui_e2e.py learn   --out $D/e2e-rec
-# stop + restart the server in terminal 1, then:
-python3 tests/e2e/course_ui_e2e.py resume  --out $D/e2e-rec
-./alearn --workspace . ledger-verify --session $SID
+# synthetic fixture (also the CI job):
+python3 tests/e2e/course_ui_e2e.py --out <dir> [--node-modules <existing node_modules>]
+# real content: restore a verified backup into a scratch workspace, then run the driver
+alearn --workspace . backup-session --session <sid> --output .learning/<name>.zip
+alearn --workspace <scratch> restore-session --backup-file <scratch>/backup.zip
 ```
-
-A new recording needs a fresh session (the phases assume a clean start).

@@ -202,9 +202,13 @@ class V530Tests(unittest.TestCase):
             self.assertFalse(p.renderer_available)
             self.assertIn("contract_only", p.lifecycle_status)
 
-    def test_no_html_or_js_exists_in_package(self):
+    def test_renderer_sources_separate_from_bundled_ui(self):
         _skip = {".learning", "decks", "build", "node_modules"}  # content/build output, not runtime renderer code
-        suffixes = {p.suffix for p in ROOT.rglob("*") if p.is_file() and not (_skip & set(p.relative_to(ROOT).parts))}
+        bundled = ROOT / "skills" / "adaptive-learn" / "templates" / "react" / "dist"
+        self.assertTrue((bundled / "index.html").is_file())
+        self.assertTrue(list((bundled / "assets").glob("*.js")))
+        suffixes = {p.suffix for p in ROOT.rglob("*") if p.is_file()
+                    and not (_skip & set(p.relative_to(ROOT).parts)) and not p.is_relative_to(bundled)}
         self.assertNotIn(".html", suffixes)
         self.assertNotIn(".js", suffixes)
 

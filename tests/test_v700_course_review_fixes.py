@@ -146,9 +146,12 @@ class StoreProtectionTests(CourseCase):
         stray["content_version"] = "lc-0000000000000000"   # file left by an install that never committed
         (self.d / "course/lessons/vec-sim.json").write_text(json.dumps(stray), encoding="utf-8")
         self.assertNotEqual(committed, stray["content_version"])
-        with self.assertRaises(CourseStateError) as ctx:
-            self.k.start_mission(self.sid, "vec-sim")
-        self.assertEqual(ctx.exception.code, "lesson_missing")
+        # v7.1: the committed version is read from its immutable archive, so a stray live
+        # file is neither served nor able to hide the committed lesson.
+        self.k.start_mission(self.sid, "vec-sim")
+        node = {n["id"]: n for n in self.k.state(self.sid)["roadmap"]["nodes"]}["vec-sim"]
+        self.assertEqual(node["lesson"]["content_version"], committed)
+        self.assertNotEqual(node["lesson"]["content_version"], stray["content_version"])
 
 
 class BridgeHardeningTests(CourseCase):
@@ -159,10 +162,10 @@ class BridgeHardeningTests(CourseCase):
         port = srv.server_address[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
-            self.assertEqual(call(port, "/api/course/resume", {"ui_schema": 1}, origin="http://localhost:3000")[0], 401)
-            self.assertEqual(call(port, "/api/course/resume", {"ui_schema": 1}, origin=f"http://127.0.0.1:{port}")[0], 200)
+            self.assertEqual(call(port, "/api/course/resume", {"ui_schema": 2}, origin="http://localhost:3000")[0], 401)
+            self.assertEqual(call(port, "/api/course/resume", {"ui_schema": 2}, origin=f"http://127.0.0.1:{port}")[0], 200)
             req = urllib.request.Request(f"http://127.0.0.1:{port}/api/course/resume", method="POST",
-                                         data=b'{"ui_schema": 1}', headers={"Content-Type": "text/plain"})
+                                         data=b'{"ui_schema": 2}', headers={"Content-Type": "text/plain"})
             try:
                 urllib.request.urlopen(req, timeout=10)
                 status = 200
@@ -170,7 +173,7 @@ class BridgeHardeningTests(CourseCase):
                 status = e.code
             self.assertEqual(status, 415)
             rev = self.k.state(self.sid)["revision"]
-            code, _, _ = call(port, "/api/course/commitments", {"ui_schema": 1, "expected_revision": rev,
+            code, _, _ = call(port, "/api/course/commitments", {"ui_schema": 2, "expected_revision": rev,
                                                                 "commitments": "not-an-object"})
             self.assertIn(code, {400, 409})
         finally:

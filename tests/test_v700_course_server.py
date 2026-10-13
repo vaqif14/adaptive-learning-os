@@ -69,7 +69,7 @@ class CourseServerTests(unittest.TestCase):
         cls.iso.__exit__()
 
     def post(self, path, body, **kw):
-        return call(self.port, path, {"ui_schema": 1, **body}, **kw)
+        return call(self.port, path, {"ui_schema": 2, **body}, **kw)
 
     def rev(self):
         return call(self.port, "/api/course/state")[1]["revision"]

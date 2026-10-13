@@ -103,16 +103,40 @@ exam_domain`. Stage labels, pitfalls wording and inline drafts are cosmetic.
   reference, probes must stay silent on it and fire on their wrong examples.
 - Worked examples and practice must not overlap any item (3-shingle similarity
   < 0.35 and no shared prompt prefix), so "Bilmirəm" never reveals the exam.
-- Starting an exam selects the easiest **unexposed** item, freezes its version,
-  exposes only prompt + starter file, and locks all teaching. Refresh, Back,
+- **Freshness is content identity, not an id (v7.1).** Every item has a canonical
+  content fingerprint (prompt + checks/keys/rubric; ids, titles, order, check names,
+  whitespace, markdown and case excluded) and a behaviour fingerprint (hidden check
+  ASTs / question keys / rubric). Against what the learner was already examined on
+  (`exposure_records`) an item is `duplicate` (same content or behaviour), `needs_review`
+  (check-set overlap ≥ 0.5, prompt similarity ≥ 0.5 or 5-gram ≥ 0.6 — policy `fresh-v1`)
+  or `fresh`. Only fresh items are served; `course item-freshness --decision distinct`
+  with a concrete rationale can clear a near-duplicate, and evidence from it is capped
+  at medium. Copies inside one payload are rejected. `task_fingerprint` is the content
+  fingerprint + submission hash, so a renamed replay collapses.
+- Starting an exam selects the easiest **fresh** item bound to the current capability
+  version, freezes its version, exposes only the public prompt (no checks, keys,
+  distractor maps or rubric), and locks all teaching. Refresh, Back,
   direct routes, second tabs, server restarts and repeated `exam-start` calls
   resume the same attempt; the API returns 423 for lesson/help during the lock.
 - Scoring re-hashes the vault item and the submission snapshot; a changed item
   or snapshot fails scoring (`item_version_changed`, resumable or abandonable).
-- Exam evidence is `strong`/`unassisted` only when every hidden check passes;
-  `partial` (core passed, edge/transfer failed) and failures are `medium`.
-  Guided practice is always `supported_completion` with recorded support, so it
-  can never count as independent mastery.
+- **Assessment kinds (v7.1)** share one state machine, lock, persistence and UI:
+  `python` (hidden checks in the sandboxed verifier), `concept`/`scenario`
+  (single/multi choice, ordering, numeric; graded deterministically by the key;
+  misconceptions diagnosed from the chosen distractor; ordering options may not be
+  listed in answer order) and `free_text` (scored never by keywords: the attempt waits
+  in `awaiting_rubric` under the exam lock until `course exam-rubric` records a judgment
+  in which every criterion is decided and every *met* criterion quotes ≥ 12 characters
+  of the learner's own response). Non-code answers are saved with `exam-answers` /
+  the app and snapshotted at submit.
+- Evidence strength is earned per kind: Python exam `strong`/`unassisted` only when
+  every hidden check passes on an automatically fresh item (otherwise `medium`);
+  selected-response-only items are `recognition_mcq` (weak); other concept/scenario
+  items are at most `medium`; rubric judgments are `explanation`, `medium`,
+  `correctness_checked: false`. A single rubric judgment is **provisional**: the node
+  passes only with a second independent open answer (≥ medium confidence) or a
+  deterministic item for the same capability version. Guided practice is always
+  `supported_completion` with recorded support, so it can never count as mastery.
 
 - During the lock the state view itself is reduced: no lesson summaries, prior
   results, mission reasons or node help history leave the runtime (API, `course
@@ -127,10 +151,19 @@ exam_domain`. Stage labels, pitfalls wording and inline drafts are cosmetic.
   vault, private lessons, attempts); only a session's learner `workspace/` is
   readable, and exports never overwrite. Hidden-check failures report only
   builtin exception names, so a crafted exception cannot echo hidden inputs.
-- Validated source text is staged and promoted into the grounding cache only
-  after the manifest commit passes its revision and phase checks.
+- Validated source text is written to an immutable, content-addressed cache
+  (`sources/objects/<sha256>.txt`, 0600, temp + fsync + rename) before the journaled
+  manifest commit; the manifest is the only pointer, so an interrupted or refused
+  commit leaves unreferenced objects and changes nothing in use.
 - Anonymous loopback requires an Origin on the same port as the Host and a JSON
   content type for course writes (no cross-port or simple-request CSRF).
+- Committed lessons and items are read from immutable per-version archives
+  (`course/lessons/archive/<version>.json`, `assessment-vault/<node>/archive/<version>.json`),
+  so an interrupted install can neither serve nor hide committed content; exam-time
+  tampering with an attempt's live vault file still fails scoring closed.
+- An idempotency key is bound to a digest of its request; reusing it with different
+  arguments is refused. Practice evidence ids are deterministic, so a retry after a
+  failed commit never duplicates evidence. Exports are create-only (0600).
 
 **Honest boundary.** This is application-level workflow enforcement on the
 learner's own device. The owner can read the vault, edit files or use books,
@@ -160,7 +193,18 @@ chapter 6 *Neural Networks* in the Aug-2026 draft; URL identity passed but
 signed image URLs, which is why the stable text hash exists.
 
 Lesson claims must be verbatim quotes found in validated cached text
-(`find_quote`) or explicitly `supplementary`; stale sources are labelled.
+(`find_quote`) or explicitly `supplementary`.
+
+**Grounding fails closed (v7.1).** A lesson is bound to the content hash of every
+source it quotes. On every use (help, teaching, practice, exam start, readiness,
+mission, roadmap label) each quote is re-verified against the committed manifest and
+its bound hash. Any missing, unreadable, partial, identity-mismatched or removed
+source, a lost cached object, or a changed text makes the lesson `grounding_invalid`:
+help/teaching/practice/exam refuse with `grounding_invalid`, readiness is false, and
+the app shows only a labelled historical snapshot (version, date, reasons — never the
+old text as current). A changed-but-valid text is rebound only by `course reground`,
+which succeeds only if every quote still verifies; otherwise the lesson needs
+re-authoring. `record_sources` reports the impact per lesson.
 Retrieved text is never executed or obeyed. Paid books are obtained by the
 learner; file uploads require `upload_authorized_by_learner: true`.
 
@@ -186,13 +230,45 @@ the collapsible "Bu addım haqqında" note — there is no role selector.
 
 ## 8. Next mission
 
-Computed at finalization from the result and the evidence projection
-(`driver_action` is attached for transparency): all hidden checks passed ⇒ next
-open node + 24 h review, stated as one independent result, not mastery;
+Computed at finalization from the result: all checks passed ⇒ next open node and a
+scheduled review, stated as one independent result, not mastery;
 core passed / transfer failed ⇒ targeted practice; recurring misconception ⇒
 alternative explanation (method change); otherwise re-teach, then a new item;
-abandoned ⇒ retry later with a new item. Readiness (`lesson_ready`,
-`fresh_items`, `blocked_on`) is recomputed on every read, never frozen.
+abandoned ⇒ retry later with a new item; a single rubric pass ⇒ confirm with a fresh
+item. Readiness (`lesson_ready`, `fresh_items`, `blocked_on`: `lesson_content_missing`,
+`grounding_invalid`, `capability_changed`, `no_fresh_item`) is recomputed on every read.
+
+**Review queue (v7.1).** A first independent pass schedules a durable review
+(`review_queue`: deterministic id per node + source attempt + capability version, so
+replays and reconciled finalizations never duplicate it). The interval follows
+`scheduling.half_life_days` (first review after 1 day, doubling after each successful
+review, halved after a lapse, minimum 12 h) — a labelled heuristic, not an optimal
+schedule. Due reviews (for passed nodes under the current capability) are ordered
+prerequisites first, then oldest due, surface in `course turn`, the app's mission card
+(`due_review` outranks the stored mission) and `alearn next` (`course_due_review`), and
+start with `course review-start` / the app on a fresh item under the normal exam lock.
+A lapse keeps the pass (flagged `retention: lapsed`) and schedules a short retry; an
+abandoned review stays due; a capability change invalidates pending reviews. Review
+evidence records the scheduled due date and the spacing actually observed between
+ledger timestamps; it counts as `delayed_independent_performance` only if the ledger
+shows ≥ 20 h. The course runtime takes an injectable clock (`CourseKernel(ws,
+clock=…)`); elapsed-time claims never come from it.
+
+## 8b. Capability versions and roadmap revisions (v7.1)
+
+A node's capability version hashes what it certifies (`task`, `outcomes`, `skills`,
+`practice`, `source_refs`, `exam_domain`); title, stage and pitfalls are presentation and
+`requires` is ordering. Lessons, items, attempts, evidence, passes and reviews carry the
+version they were made under. `propose-roadmap` returns and shows (`review_required.impact`,
+approval panel) what approving would do; approval applies it:
+
+| Change | Effect on approval |
+|--------|--------------------|
+| capability changed / node removed | current pass → `superseded_passes` (evidence stays in the ledger), pending reviews `invalidated`, old lesson `capability_changed` and old items no longer eligible until re-authored; capability history kept |
+| dependents of a changed node | own passes kept and flagged `upstream_changed`; unpassed dependents lock until the prerequisite is shown again |
+| `requires` changed / node added / cosmetic edit | progress kept |
+
+Re-authoring the same lesson rebinds it; an already exposed item stays spent.
 
 ## 9. Time and commitments
 
@@ -265,19 +341,53 @@ alearn --workspace . course serve --session <sid> --allow-anon # http://127.0.0.
 alearn --workspace . course author-items  --session <sid> --node <id> --file items.json
 alearn --workspace . course author-lesson --session <sid> --node <id> --file lesson.json
 alearn --workspace . course turn --session <sid>               # every agent turn
+# non-code practice/exams, rubric judgments, reviews, grounding, freshness:
+alearn --workspace . course practice-answer --session <sid> --node <id> --file answers.json
+alearn --workspace . course exam-answers --session <sid> --attempt <att> --file answers.json
+alearn --workspace . course exam-rubric --session <sid> --attempt <att> --file judgment.json
+alearn --workspace . course review-start --session <sid> --node <id>
+alearn --workspace . course reground --session <sid> --node <id>
+alearn --workspace . course item-freshness --session <sid> --node <id> --item <item> --decision distinct --rationale "…"
+alearn --workspace . course schema-down --session <sid> --output state-v1.json   # export only
 ```
 
 Resuming = start the server again (or run `course turn`); the persisted phase,
 active attempt, mission and accountability state are restored from the journal.
 `--allow-anon` binds loopback only and still enforces the Host/Origin checks;
-use `--token` on shared machines. Browser E2E (optional, needs Playwright):
-`python3 tests/e2e/course_ui_e2e.py approve|learn|resume --out <dir>`.
+use `--token` on shared machines.
+
+**Schema v2 migration and recovery.** Opening a v1 course migrates it in two journaled
+steps: `course_state_migrated` (v2 keys added, every existing key preserved, the exact
+v1 state archived in the same transaction as `course-state.pre-v2.json`) and
+`course_legacy_bindings_resolved` (approved roadmap → capability versions with basis
+`legacy_migration`; a pending reviewed change → `legacy_changed` so the next approval
+supersedes precisely; an out-of-band change of unknown content → `legacy_unverified`;
+lesson source hashes, item fingerprints and exposure records from the vault, unknown
+exposures recorded as unverifiable; a scheduled review from each passed node's last
+pass). Nothing is deleted and passes are kept. A crash between the two steps resumes
+at the second on the next open. `course schema-down` exports a v1 view (v2 data
+archived under `v2_archive`) without touching the live state; rolling back means
+restoring that export into an older runtime. After upgrading, run `course
+regenerate-ui` + `course build-ui`: the bridge refuses UI builds with an older
+`ui_schema` (v2 required). A roadmap revision keeps the built app servable.
+
+**Browser E2E** (optional locally, a CI job): `python3 tests/e2e/course_ui_e2e.py
+--out <dir> [--node-modules <existing install>]` builds the real UI for a synthetic
+fixture course, drives approval, Python and concept lessons, exams, refresh/Back/
+Forward/direct routes/second tab/server restart, duplicates, source invalidation,
+capability reapproval and a due review, and writes `e2e-log.json` (typed assertions
+only, telemetry separate), verified screenshots and `trace.zip`.
 
 ## 13. Known limitations
 
 - One executable verifier path (sandboxed Python) for course checks; other
   languages use the existing execution backends but are not wired into course
-  items yet.
+  items yet. Non-code items are deterministic keys or rubric judgments by the host
+  agent/human — no model scores open answers inside the runtime.
+- Freshness checks identity and lexical/behavioural overlap, not semantic
+  paraphrase or transfer distance; thresholds are uncalibrated heuristics
+  (`learning-evidence-decisions.md`).
+- The remediation ladder is still thin (no prerequisite step-back or fading).
 - The vault is not secret from the device owner; no proctoring.
 - Engagement is a heuristic; IDE time is invisible.
 - Item freshness depends on authored items; when a node runs out, the mission
@@ -286,3 +396,17 @@ use `--token` on shared machines. Browser E2E (optional, needs Playwright):
   the ledger linearly (fine locally; compaction is future work).
 - Learning efficacy is not demonstrated by this software; see
   [efficacy study](efficacy-study.md).
+# Review-first enforcement follow-up
+
+Current due reviews are enforced by the shared action layer, not just the mission
+display. Teaching, practice, ordinary new exams and lesson retrieval refuse with
+`review_required`; use `course review-start`. Existing open attempts still resume.
+Source repair and authoring fresh items remain possible if a review is blocked.
+After a failed review, remediation is available until the shorter retry becomes due.
+
+Review evidence measures spacing from the latest journaled learning or retrieval
+for that capability before the review began, including explanations, practice and
+ordinary exams. It exposes `last_learning_record_id`; unrounded time determines the
+delayed label. This does not detect external study or validate a forgetting model.
+See [local follow-up audit](local-followup-audit.md) for whole-journey limitations and
+the reproducible read-only live NotebookLM smoke.

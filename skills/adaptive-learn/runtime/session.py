@@ -21,7 +21,7 @@ from .anchors import plan_anchor
 from .learning_workspace import normalize_plan, create_workspace
 from .safety import safe_session_dir, UnsafePathError
 from .session_lock import locked_session
-from .local_state import commit_state, recover_state, workspace_metadata, sync_tree
+from .local_state import commit_state, recover_state, sync_tree
 
 # Attestation is a QUALIFIED EXTERNAL assessor channel. These identities are the learner
 # or the host itself, so accepting them would turn attest into self-report that can
@@ -36,20 +36,30 @@ class SessionKernel:
         self.workspace = workspace
         self.sessions_dir = workspace / ".learning" / "sessions"
 
-    def start(self, topic: str, contract: LearningContract, mode: str | None = None, adapter_dirs: list[Path] | None = None, learner_id: str | None = None, roadmap: dict | None = None) -> dict:
-        plan = normalize_plan(topic, contract.goal, roadmap) if contract.goal_mode == "learn" and mode != "quick_answer" else None
+    def start(self, topic: str, contract: LearningContract, mode: str | None = None, adapter_dirs: list[Path] | None = None, learner_id: str | None = None, roadmap: dict | None = None, *, defer_workspace: bool = False) -> dict:
+        """Start state-only when deferred; default preserves the legacy Python API.
+
+        The learning CLI opts into cli_first. An explicit input plan is candidate
+        data until the guarded course proposal/approval flow installs it.
+        """
+        if type(defer_workspace) is not bool:
+            raise ValueError("defer_workspace must be a boolean")
+        plan = (normalize_plan(topic, contract.goal, roadmap)
+                if contract.goal_mode == "learn" and mode != "quick_answer"
+                and (roadmap is not None or not defer_workspace) else None)
         sid = new_id("sess")
         d = self.sessions_dir / sid
         d.mkdir(parents=True, exist_ok=False)
         try:
-            return self._write_new_session(d, sid, topic, contract, mode, adapter_dirs, learner_id, plan)
+            return self._write_new_session(d, sid, topic, contract, mode, adapter_dirs, learner_id, plan,
+                                           defer_workspace=defer_workspace)
         except BaseException:
             # Roll back a half-created session so no 0-byte session.json survives.
             import shutil
             shutil.rmtree(d, ignore_errors=True)
             raise
 
-    def _write_new_session(self, d, sid, topic, contract, mode, adapter_dirs, learner_id=None, plan=None):
+    def _write_new_session(self, d, sid, topic, contract, mode, adapter_dirs, learner_id=None, plan=None, *, defer_workspace=False):
         adapter = AdapterRegistry(adapter_dirs).match(topic)
         adapter_dict = asdict(adapter)
         anchor = plan_anchor(topic, mode, contract.to_dict(), adapter_dict)
@@ -62,9 +72,13 @@ class SessionKernel:
             "adapter_id": adapter.adapter_id,
             "interaction_mode": mode,
             "anchor_probe": anchor.to_dict(),
+            "workflow": "cli_first" if defer_workspace else "legacy_workspace",
         }
         if plan is not None:
-            session["learning_workspace"] = create_workspace(d / "workspace", plan, sid)
+            if defer_workspace:
+                session["candidate_roadmap"] = plan
+            else:
+                session["learning_workspace"] = create_workspace(d / "workspace", plan, sid)
         write_json(d / "session.json", session)
         write_json(d / "learning-contract.json", contract.to_dict())
         write_json(d / "source-policy.json", contract.source_policy.to_dict())
@@ -327,45 +341,100 @@ class SessionKernel:
         return {"total": len(cards), "due": due_cards(cards)}
 
     @locked_session
-    def set_roadmap(self, session_id: str, plan: dict, *, _course_internal: bool = False) -> dict:
+    def set_roadmap(self, session_id: str, plan: dict, *, _course_internal: bool = False, roadmap_only: bool = False,
+                    prepare_only: bool = False) -> dict:
         """Attach/replace the roadmap on an existing session.
 
         The agentic flow gathers intake first, so the authoritative roadmap is
         built AFTER `start`. This rebuilds the workspace from a validated plan
         (normalize_plan enforces slugs, acyclic prerequisites, HTTP(S) sources).
+        With prepare_only, return the synced install and session state for the
+        caller's journal transaction; neither current state nor workspace changes.
         """
         from .learning_workspace import normalize_plan, create_workspace
         d = self.dir(session_id)
         self.ledger(session_id).require_integrity()
-        if (d / "course-state.json").exists() and not _course_internal:
+        session = read_json(d / "session.json")
+        if (session.get("workflow") == "cli_first" or (d / "course-state.json").exists() or roadmap_only) and not _course_internal:
             # A course binds the roadmap to an approval; replacing it here would
             # change what the learner approved without a review.
             raise ValueError("this session is a course: use `alearn course propose-roadmap` "
                              "so the change goes through learner approval")
-        session = read_json(d / "session.json")
         contract = read_json(d / "learning-contract.json")
         norm = normalize_plan(session["topic"], contract.get("goal"), plan)
         # Prepare completely before the journal commit; old learner work stays live.
         stage = d / f"workspace-stage-{new_id('v')}"
-        create_workspace(stage, norm, session_id)
-        write_json(stage / "frontend/src/data/roadmap.json",
-                   {**norm, "workspace_directory": str((d / "workspace").resolve())})
+        if roadmap_only:
+            create_workspace(stage, norm, session_id, roadmap_only=True)
+        else:
+            create_workspace(stage, norm, session_id)
+            write_json(stage / "frontend/src/data/roadmap.json",
+                       {**norm, "workspace_directory": str((d / "workspace").resolve())})
         # Carry forward the learner's in-progress work for nodes that survive the
         # new roadmap, so replacing the roadmap never silently blanks a submission.
         import shutil
         old_ws = d / "workspace"
         if old_ws.exists():
-            for n in norm["nodes"]:
-                for sub in ("submission", "feedback", "exam", "practice"):
-                    src = old_ws / "modules" / n["id"] / sub
-                    dst = stage / "modules" / n["id"] / sub
-                    if src.is_dir() and dst.parent.exists():
+            if roadmap_only:
+                # A revised proposal adds no new teaching assets. Existing work
+                # remains available on disk and in the previous-workspace archive;
+                # course guards control whether old content may be taught.
+                for src in old_ws.iterdir():
+                    if src.name in {"roadmap.json", "index.html", "roadmap.html"}:
+                        continue
+                    dst = stage / src.name
+                    if src.is_dir():
+                        shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=True,
+                                        ignore=shutil.ignore_patterns("node_modules", "__pycache__", ".pytest_cache"))
+                    else:
+                        shutil.copy2(src, dst, follow_symlinks=False)
+            if not roadmap_only:
+                # Keep learner artifacts, checks and notes for every old node,
+                # including removed nodes. Only generated task/index documents
+                # for surviving nodes are refreshed; originals stay archived.
+                old_modules = old_ws / "modules"
+                for module in old_modules.iterdir() if old_modules.is_dir() else []:
+                    if not module.is_dir():
+                        continue
+                    target = stage / "modules" / module.name
+                    surviving = target.exists()
+                    target.mkdir(parents=True, exist_ok=True)
+                    for src in module.iterdir():
+                        if surviving and src.name in {"TASK.md", "index.html"}:
+                            continue
+                        dst = target / src.name
+                        if src.is_dir():
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, dst)
+                old_resources = old_ws / "resources"
+                for src in old_resources.iterdir() if old_resources.is_dir() else []:
+                    if src.name == "SOURCES.md":
+                        continue  # derived source list follows the new plan
+                    dst = stage / "resources" / src.name
+                    if src.is_dir():
                         shutil.copytree(src, dst, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, dst)
+            # A running course server keeps serving the built app across a roadmap
+            # revision: the app hydrates from the server, and its bundled roadmap
+            # snapshot is only the offline fallback (rebuild with `course build-ui`).
+            built = old_ws / "frontend" / "dist"
+            if not roadmap_only and built.is_dir() and not built.is_symlink():
+                shutil.copytree(built, stage / "frontend" / "dist", dirs_exist_ok=True, symlinks=True)
         sync_tree(stage)
-        ws = workspace_metadata(d / "workspace")
+        final_root = (d / "workspace").resolve()
+        ws = {"directory": str(final_root)}
+        for key, rel in (("frontend_directory", "frontend"), ("index_html", "index.html"), ("roadmap_json", "roadmap.json")):
+            if (stage / rel).exists():
+                ws[key] = str(final_root / rel)
         session["learning_workspace"] = ws
+        session.pop("candidate_roadmap", None)
+        if prepare_only:
+            return {"nodes": len(norm["nodes"]), "workspace": ws,
+                    "workspace_install": stage.name, "files": {"session.json": session}}
         commit_state(d, self.ledger(session_id),
-            {"event_type": "roadmap_set", "nodes": len(norm["nodes"])},
+            {"event_type": "roadmap_set", "nodes": len(norm["nodes"]), "roadmap_only": roadmap_only},
             {"session.json": session}, workspace_install=stage.name)
         return {"nodes": len(norm["nodes"]), "workspace": ws}
 
@@ -377,6 +446,9 @@ class SessionKernel:
             return {"action": "repair_ledger", "reason": "evidence_journal_integrity_broken",
                     "integrity": integrity,
                     "instruction": "Stop learning-state writes. Preserve the original journal and investigate or restore a verified backup; never silently discard damaged evidence."}
+        if read_json(self.dir(session_id) / "session.json").get("workflow") == "cli_first" and not (self.dir(session_id) / "course-state.json").exists():
+            return {"action": "course_onboarding", "reason": "cli_first_state_only",
+                    "instruction": "Run course init, then conversational goal clarification and brief diagnostic, verify readable resources, generate roadmap HTML, await exact learner approval, then generate the teaching workspace. No HTML has been generated by start."}
         # A course session's persisted phase (approval pending, exam lock) outranks
         # the generic loop, so the agent cannot teach past an unapproved roadmap or
         # into an active exam by forgetting a prose rule.

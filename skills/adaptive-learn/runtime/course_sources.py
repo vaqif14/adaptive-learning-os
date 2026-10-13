@@ -374,6 +374,59 @@ def _norm_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+_SHA = re.compile(r"[0-9a-f]{64}")
+
+
+def object_path(cache_dir: Path, sha256: str) -> Path:
+    if not isinstance(sha256, str) or not _SHA.fullmatch(sha256):
+        raise ValueError("content hash must be a sha256 hex digest")
+    return Path(cache_dir) / "objects" / f"{sha256}.txt"
+
+
+def store_objects(staged: Path, cache_dir: Path) -> dict:
+    """Copy staged texts into the immutable content-addressed cache; return {source_id: sha256}.
+
+    Objects are written (temp + fsync + rename) before the manifest commit and are
+    never overwritten or removed, so an interrupted commit leaves only unreferenced
+    objects: the committed manifest keeps pointing at the text it was validated on.
+    """
+    out = {}
+    for f in sorted(Path(staged).glob("*.txt")):
+        if f.is_symlink() or not f.is_file():
+            continue
+        data = f.read_bytes()
+        sha = hashlib.sha256(data).hexdigest()
+        target = object_path(cache_dir, sha)
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            tmp = target.with_name(f".{sha}.{uuid.uuid4().hex[:8]}.tmp")
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, target)
+        out[f.stem] = sha
+    return out
+
+
+def _cached_text(cache_dir: Path, source_id: str, sha256: str) -> tuple[str | None, str | None]:
+    """(text, problem): the content-addressed object first, then the pre-v2 per-source
+    file — each accepted only while its bytes still hash to the manifest's value."""
+    try:
+        obj = object_path(cache_dir, sha256)
+    except ValueError:
+        return None, "cached_text_missing_revalidate_sources"
+    problem = "cached_text_missing_revalidate_sources"
+    for path in (obj, Path(cache_dir) / f"{_sid(source_id)}.txt"):
+        if path.is_file() and not path.is_symlink():
+            data = path.read_bytes()          # bytes: newline translation would break the hash
+            if hashlib.sha256(data).hexdigest() == sha256:
+                return data.decode("utf-8"), None
+            problem = "cached_text_changed_revalidate_sources"
+    return None, problem
+
+
 def find_quote(cache_dir: Path, manifest: dict, source_id: str, quote: str) -> dict:
     """Is ``quote`` really present in the validated source text? (grounding check)"""
     entry = next((r for r in (manifest or {}).get("resources", []) if r.get("source_id") == source_id), None)
@@ -383,15 +436,12 @@ def find_quote(cache_dir: Path, manifest: dict, source_id: str, quote: str) -> d
         return {"grounded": False, "reason": f"source_status_{entry['status']}"}
     if not isinstance(quote, str) or len(quote.strip()) < 12:
         return {"grounded": False, "reason": "quote_too_short"}
-    path = Path(cache_dir) / f"{_sid(source_id)}.txt"
-    if not path.is_file():
-        return {"grounded": False, "reason": "cached_text_missing_revalidate_sources"}
-    content = path.read_text(encoding="utf-8")
-    if hashlib.sha256(content.encode("utf-8")).hexdigest() != entry["content_sha256"]:
-        return {"grounded": False, "reason": "cached_text_changed_revalidate_sources"}
+    content, problem = _cached_text(cache_dir, source_id, entry.get("content_sha256"))
+    if content is None:
+        return {"grounded": False, "reason": problem}
     found = _norm_text(quote) in _norm_text(content)
     return {"grounded": found, "reason": None if found else "quote_not_found_in_source",
-            "stale": bool(entry.get("stale"))}
+            "stale": bool(entry.get("stale")), "content_sha256": entry["content_sha256"]}
 
 
 def ask_notebook(notebook_id: str, question: str, caps: dict, source_ids: list[str] | None = None) -> dict:

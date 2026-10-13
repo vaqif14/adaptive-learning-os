@@ -127,18 +127,23 @@ def cmd_start(args):
     roadmap = json.loads(safe_input_path(workspace(args), args.roadmap_file).read_text(encoding="utf-8")) if args.roadmap_file else None
     catalog = None
     selection = None
-    if not args.without_notebooklm and contract.goal_mode == "learn" and args.mode != "quick_answer":
+    if not args.without_notebooklm and contract.goal_mode == "learn" and args.mode != "quick_answer" and args.notebook_id:
         catalog = list_notebooks(args.notebook_cli)
         if args.notebook_id:
             selection = choose_notebook(catalog, args.notebook_id)
     elif args.notebook_id:
         raise ValueError("Notebook selection requires a learning start with NotebookLM enabled.")
-    session = kernel(args).start(args.topic, contract, args.mode, learner_id=getattr(args, 'learner_id', None), roadmap=roadmap)
+    session = kernel(args).start(args.topic, contract, args.mode, learner_id=getattr(args, 'learner_id', None), roadmap=roadmap,
+                                 defer_workspace=True)
+    if contract.goal_mode == "learn" and args.mode != "quick_answer":
+        session["next_action"] = "course init; clarify goal and diagnostic; verify resources; propose roadmap; await learner approval"
     if selection:
         bind_notebook(kernel(args).dir(session["session_id"]), selection)
         session["notebooklm"] = selection
     elif catalog is not None:
         session["notebook_selection"] = {**catalog, "selection_required": catalog["status"] == "ready" and bool(catalog["notebooks"])}
+    elif not args.without_notebooklm and contract.goal_mode == "learn" and args.mode != "quick_answer":
+        session["notebook_selection"] = {"status": "deferred_until_goal_clarified", "action": "Clarify goal/diagnostic first, then use notebooks and select an existing NotebookLM notebook; no automatic remote writes."}
     printj(session)
 
 
@@ -942,6 +947,20 @@ def _course(args):
     return CourseKernel(workspace(args))
 
 
+def _write_export(target: Path, obj) -> None:
+    """Create-only (O_EXCL, 0600) so an export never overwrites and never changes the
+    permissions of the directory it is written into."""
+    data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        raise ValueError("export target exists; choose a new file (exports never overwrite)") from None
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _jsonfile(args, raw):
     return json.loads(safe_input_path(workspace(args), raw).read_text(encoding="utf-8"))
 
@@ -974,7 +993,7 @@ def cmd_course(args):
     sub = args.course_cmd
     sid = getattr(args, "session", None)
     if sub == "init":
-        return printj(k.init(sid))
+        return printj(k.init(sid, require_intake=True))
     if sub == "turn":
         return printj(k.turn(sid))
     if sub == "state":
@@ -982,17 +1001,30 @@ def cmd_course(args):
     if sub == "export":
         out = k.export(sid)
         if args.output:
-            from runtime.utils import write_json
             target = safe_input_path(workspace(args), args.output, must_exist=False)
-            if target.exists():
-                raise ValueError("export target exists; choose a new file (exports never overwrite)")
-            write_json(target, out)
+            _write_export(target, out)
             return printj({"written": str(target), "export_schema_version": out["export_schema_version"]})
         return printj(out)
     if sub == "target":
         return printj(k.record_target(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "goal-clarify":
+        return printj(k.confirm_goal(sid, _jsonfile(args, args.file), **_kw(args)))
     if sub == "diagnostic":
         return printj(k.record_diagnostic(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "diagnostic-next":
+        return printj(k.diagnostic_next(sid))
+    if sub == "intake":
+        return printj(k.record_intake(sid, {"goal": args.goal} if args.goal is not None else {"stated_background": args.stated_background}, **_kw(args)))
+    if sub == "diagnostic-probe":
+        return printj(k.install_diagnostic_probe(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "diagnostic-judge":
+        return printj(k.judge_diagnostic(sid, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "diagnostic-answer":
+        return printj(k.answer_diagnostic(sid, safe_input_path(workspace(args), args.response_file).read_text(), args.assistance, **_kw(args)))
+    if sub == "diagnostic-skip":
+        return printj(k.skip_diagnostic(sid, args.reason, **_kw(args)))
+    if sub == "recovery":
+        return printj(k.record_recovery(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
     if sub == "sources-capabilities":
         return printj(csrc.capabilities(args.notebook_cli))
     if sub == "sources-create-notebook":
@@ -1047,6 +1079,26 @@ def cmd_course(args):
         return printj(k.begin_practice(sid, args.node, **_kw(args)))
     if sub == "practice-check":
         return printj(k.practice_check(sid, args.node, **_kw(args)))
+    if sub == "practice-answer":
+        return printj(k.practice_answer(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "exam-answers":
+        return printj(k.save_answers(sid, args.attempt, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "exam-rubric":
+        return printj(k.judge_and_finalize(sid, args.attempt, _jsonfile(args, args.file), **_kw(args)))
+    if sub == "review-start":
+        return printj(k.start_review(sid, args.node, **_kw(args)))
+    if sub == "reground":
+        return printj(k.reground(sid, args.node, **_kw(args)))
+    if sub == "item-freshness":
+        return printj(k.review_freshness(sid, args.node, args.item, args.decision, args.rationale, **_kw(args)))
+    if sub == "schema-down":
+        from runtime import course_state as cstate
+        target = safe_input_path(workspace(args), args.output, must_exist=False)
+        k.state(sid)   # migrate + reconcile under the session lock first
+        state = read_json(kernel(args).dir(sid) / "course-state.json")
+        _write_export(target, cstate.down_v2_to_v1(state))
+        return printj({"written": str(target), "schema_version": 1,
+                       "note": "export only; the live v2 state is unchanged and v2-only data is archived under v2_archive"})
     if sub == "exam-start":
         return printj(k.start_exam(sid, args.node, fast_track=args.fast_track, **_kw(args)))
     if sub == "exam-submit":
@@ -1071,8 +1123,12 @@ def cmd_course(args):
                 raise SystemExit(proc.returncode)
         return printj({"built": str(frontend / "dist")})
     if sub == "serve":
-        k.state(sid)   # fail fast on a missing/invalid course
+        view = k.state(sid)   # fail fast on a missing/invalid course
+        if not view["roadmap"]["approved"] and not args.intake:
+            raise SystemExit("Course interface waits for roadmap approval. Optional intake/roadmap preview only: add --intake; it is not a generated course.")
         dist = kernel(args).dir(sid) / "workspace" / "frontend" / "dist"
+        if args.intake and not view["roadmap"]["approved"]:
+            dist = SKILL_DIR / "templates" / "react" / "dist"
         if not (dist / "index.html").is_file():
             raise SystemExit(f"no built UI at {dist}; run `alearn course build-ui --session {sid}` first")
         cfg = ServerConfig(host=args.host, port=args.port, token=args.token, allow_anon=args.allow_anon,
@@ -1102,7 +1158,22 @@ def _add_course_parser(sp):
     sub("state", "read-only course state")
     sub("export", "versioned human-readable export").add_argument("--output")
     sub("target", "record a verified goal target (e.g. certification)", mutating=True).add_argument("--file", required=True)
+    sub("goal-clarify", "record actual learner agreement on clarified goal/target; qualified skip stays provisional", mutating=True).add_argument("--file", required=True)
     sub("diagnostic", "record provisional profile/diagnostic", mutating=True).add_argument("--file", required=True)
+    sub("diagnostic-next", "one performance-based diagnostic step; bounded, provisional, no overall level")
+    intake = sub("intake", "record one goal-first intake answer", mutating=True)
+    question = intake.add_mutually_exclusive_group(required=True)
+    question.add_argument("--goal")
+    question.add_argument("--stated-background")
+    sub("diagnostic-probe", "host prepares a scoped learner-visible performance task", mutating=True).add_argument("--file", required=True)
+    sub("diagnostic-judge", "host judges the captured response; never automatic mastery", mutating=True).add_argument("--file", required=True)
+    answer = sub("diagnostic-answer", "learner produces an answer without assigning an outcome", mutating=True)
+    answer.add_argument("--response-file", required=True)
+    answer.add_argument("--assistance", action="append", default=[])
+    sub("diagnostic-skip", "explicit learner choice to proceed provisionally", mutating=True).add_argument("--reason", required=True)
+    recovery = sub("recovery", "agree a changed plan after repeated failed independent attempts", mutating=True)
+    recovery.add_argument("--node", required=True)
+    recovery.add_argument("--file", required=True)
     sub("sources-capabilities", "inspect installed NotebookLM CLI (no credentials shown)", session=False)
     sub("sources-create-notebook", "create a NotebookLM notebook and bind it to this session").add_argument("--title", required=True)
     sub("sources-add", "add authorized resources (JSON list) to the bound notebook").add_argument("--file", required=True)
@@ -1137,6 +1208,26 @@ def _add_course_parser(sp):
     es.add_argument("--node", required=True)
     es.add_argument("--fast-track", action="store_true")
     sub("exam-submit", "submit + score + finalize (each step durable/resumable)", mutating=True).add_argument("--attempt", required=True)
+    pa = sub("practice-answer", "grade concept/scenario practice answers (JSON {question_id: answer})", mutating=True)
+    pa.add_argument("--node", required=True)
+    pa.add_argument("--file", required=True)
+    ea = sub("exam-answers", "save non-code exam answers (no grading, no feedback)", mutating=True)
+    ea.add_argument("--attempt", required=True)
+    ea.add_argument("--file", required=True)
+    er = sub("exam-rubric", "record an explicit, quote-linked rubric judgment for an open answer, then finalize",
+             mutating=True)
+    er.add_argument("--attempt", required=True)
+    er.add_argument("--file", required=True)
+    sub("review-start", "start a due spaced review (fresh unassisted item)", mutating=True).add_argument("--node", required=True)
+    sub("reground", "rebind a lesson to changed-but-valid sources (every quote re-verified)",
+        mutating=True).add_argument("--node", required=True)
+    fr = sub("item-freshness", "decide on a near-duplicate item (distinct needs a concrete rationale)", mutating=True)
+    fr.add_argument("--node", required=True)
+    fr.add_argument("--item", required=True)
+    fr.add_argument("--decision", required=True, choices=["distinct", "duplicate"])
+    fr.add_argument("--rationale")
+    sub("schema-down", "export the course state as schema v1 (v2 data archived; live state unchanged)").add_argument(
+        "--output", required=True)
     ab = sub("exam-abandon", "explicitly abandon (never counted as success)", mutating=True)
     ab.add_argument("--attempt", required=True)
     ab.add_argument("--reason")
@@ -1152,6 +1243,7 @@ def _add_course_parser(sp):
     srv.add_argument("--port", type=int, default=8787)
     srv.add_argument("--token")
     srv.add_argument("--allow-anon", action="store_true", help="loopback-only; Host/Origin checks still apply")
+    srv.add_argument("--intake", action="store_true", help="explicit optional intake/roadmap preview; never a generated course before approval")
     srv.set_defaults(no_outer_lock=True)
 
 

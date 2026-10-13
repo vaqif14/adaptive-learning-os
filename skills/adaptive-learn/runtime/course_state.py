@@ -14,8 +14,8 @@ import copy
 import hashlib
 import json
 
-SCHEMA_VERSION = 1
-UI_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+UI_SCHEMA_VERSION = 2
 
 PHASES = (
     "onboarding",                 # goal + brief provisional diagnostic
@@ -29,7 +29,11 @@ PHASES = (
     "feedback",                   # finalized result + specific feedback
     "next_mission",               # evidence-derived next mission shown
 )
-ATTEMPT_STATUSES = ("none", "active", "submitted", "scoring_failed", "scored", "finalized", "abandoned")
+ATTEMPT_STATUSES = ("none", "active", "submitted", "scoring_failed", "awaiting_rubric", "scored", "finalized",
+                    "abandoned")
+OPEN_ATTEMPT_STATUSES = frozenset({"active", "submitted", "scoring_failed", "awaiting_rubric", "scored"})
+REVIEW_STATUSES = ("scheduled", "in_progress", "completed", "superseded", "invalidated")
+PENDING_REVIEW = frozenset({"scheduled", "in_progress"})
 TEACHING_LOCKED_PHASES = frozenset({"exam_active", "assessment_pending"})
 _AFTER_APPROVAL = frozenset(PHASES[3:])
 _NOT_DURING_EXAM = frozenset(PHASES) - TEACHING_LOCKED_PHASES
@@ -37,7 +41,9 @@ _NOT_DURING_EXAM = frozenset(PHASES) - TEACHING_LOCKED_PHASES
 # action -> phases it may start from. Anything absent is denied (fail closed).
 ALLOWED: dict[str, frozenset] = {
     "record_goal": frozenset({"onboarding", "source_preparation", "roadmap_awaiting_approval"}),
+    "confirm_goal": frozenset({"onboarding", "source_preparation", "roadmap_awaiting_approval"}),
     "record_profile": _NOT_DURING_EXAM,
+    "record_recovery": _NOT_DURING_EXAM,
     "begin_sources": frozenset({"onboarding", "source_preparation"}),
     "record_sources": frozenset({"source_preparation", "roadmap_awaiting_approval", "course_generation",
                                  "teaching", "practice", "feedback", "next_mission"}),
@@ -48,24 +54,39 @@ ALLOWED: dict[str, frozenset] = {
     "approve_roadmap": frozenset({"roadmap_awaiting_approval"}),
     "install_content": frozenset({"course_generation", "teaching", "practice", "feedback", "next_mission"}),
     "start_mission": frozenset({"course_generation", "teaching", "practice", "feedback", "next_mission"}),
+    "review_freshness": frozenset({"course_generation", "teaching", "practice", "feedback", "next_mission"}),
+    "reground": frozenset({"course_generation", "teaching", "practice", "feedback", "next_mission"}),
     "help": frozenset({"teaching", "practice"}),
     "self_explanation": frozenset({"teaching", "practice"}),
     "begin_practice": frozenset({"teaching", "practice"}),
     "practice_check": frozenset({"practice"}),
+    "practice_answer": frozenset({"practice"}),
     "start_exam": frozenset({"course_generation", "teaching", "practice", "feedback", "next_mission"}),
+    "save_answers": frozenset({"exam_active"}),
     "submit_exam": frozenset({"exam_active"}),
     "score_exam": frozenset({"assessment_pending"}),
     "finalize_exam": frozenset({"assessment_pending"}),
+    "record_rubric": frozenset({"assessment_pending"}),
     "abandon_exam": frozenset({"exam_active", "assessment_pending"}),
     "advance_to_mission": frozenset({"feedback"}),
     "record_commitments": _NOT_DURING_EXAM,
     "accountability_response": _NOT_DURING_EXAM,
 }
-REQUIRES_APPROVAL = frozenset({"install_content", "start_mission", "help", "self_explanation",
-                               "begin_practice", "practice_check", "start_exam"})
+REQUIRES_APPROVAL = frozenset({"install_content", "start_mission", "help", "self_explanation", "begin_practice",
+                               "practice_check", "practice_answer", "start_exam", "review_freshness", "reground"})
 
 # Learner-facing (Azerbaijani) refusal reasons; codes are stable for clients/tests.
 REASONS_AZ = {
+    "goal_required": "Əvvəl konkret məqsədi dəqiqləşdirək; fərdiləşdirilmiş HTML hələ yaradılmır.",
+    "background_required": "Əvvəl bu işə aid təcrübəni dəqiqləşdirək.",
+    "goal_clarification_required": "Məqsəd və planın çərçivəsi səninlə dəqiqləşdirilib təsdiqlənməlidir.",
+    "target_required": "Sertifikatın dəqiq rəsmi adı, kodu və məqsədləri hələ dəqiqləşdirilməyib.",
+    "provisional_skip_confirmation_required": "Diagnostic skip səbəbi saxlanıb. Yoxlamasız planın ilkin olduğunu anlayaraq davam etməyə ayrıca razılıq lazımdır; bacarıq nəticəsi yaranmır.",
+    "sources_required": "Plan üçün mənbələr hələ tam yoxlanmayıb; fərdiləşdirilmiş roadmap HTML yaradılmır.",
+    "sources_unreadable": "Mənbə mətni oxunaqlı, cari və hash-lə təsdiqlənmiş deyil; yenidən yoxlama lazımdır.",
+    "roadmap_source_refs_required": "Hər roadmap mərhələsini uyğun yoxlanmış mənbə ilə bağla.",
+    "roadmap_sources_invalid": "Roadmap-da göstərilən mənbə mövcud və yoxlanmış deyil.",
+    "roadmap_generation_stale": "Roadmap əvvəlki məqsəd və ya mənbə versiyalarına əsaslanır; yenidən təklif edib yeni versiyanı nəzərdən keçirək.",
     "exam_active": "İmtahan davam edir: bu cəhd bitənə qədər dərs, ipucu və izah bağlıdır.",
     "roadmap_not_approved": "Yol xəritəsi hələ təsdiqlənməyib. Kurs yaradılması və tədris təsdiqdən sonra başlayır.",
     "roadmap_version_mismatch": "Təsdiq köhnə yol xəritəsi versiyasına aiddir. Yeni versiyanı nəzərdən keçir.",
@@ -73,6 +94,18 @@ REASONS_AZ = {
     "revision_conflict": "Vəziyyət başqa pəncərədə və ya prosesdə dəyişib. Səhifə yeniləndi; yenidən cəhd et.",
     "stale_ui": "Bu interfeys köhnə versiyadır. Səhifəni yenilə.",
     "invalid_state": "Kurs vəziyyəti ziddiyyətlidir; yazılar dayandırıldı. Ehtiyat nüsxədən bərpa et.",
+    "lesson_missing": "Bu mərhələnin dərsi hələ hazırlanmayıb.",
+    "grounding_invalid": ("Bu dərsin mənbəsi dəyişib və ya artıq etibarlı deyil. Mənbə yenidən yoxlanana qədər "
+                          "izah, ipucu, praktika və yoxlama bağlıdır."),
+    "capability_changed": ("Bu mərhələnin məqsədi dəyişib. Köhnə dərs və tapşırıqlar tarixçədə qalır, amma yeni "
+                           "məqsəd üçün dərs və yeni tapşırıq hazırlanmalıdır."),
+    "no_fresh_item": "Bu mərhələ üçün görmədiyin tapşırıq qalmayıb. Yeni tapşırıq hazırlanmalıdır.",
+    "review_not_due": "Bu mərhələnin təkrar yoxlaması hələ vaxtı çatmayıb.",
+    "recovery_required": "Təkrar cəhdlər keçmədi. Davam etməzdən əvvəl səbəbi araşdırıb konkret dəyişmiş planı razılaşdıraq.",
+    "diagnostic_required": "Əvvəl məqsəd və qısa performans diagnostic-i tamamla; yoxlamasız davam yalnız sənin açıq razılığınla ilkin plan yaradır.",
+    "review_required": ("Təkrar yoxlamanın vaxtı çatıb. Əvvəl yeni tapşırıqla müstəqil yoxlama aparılır; "
+                        "izah və praktika bundan sonra açılacaq."),
+    "rubric_required": "Açıq cavab rubrika ilə qiymətləndirilməlidir; qərar cavabdan sitatla əsaslandırılmalıdır.",
 }
 
 
@@ -100,6 +133,11 @@ def digest(prefix: str, obj) -> str:
     return f"{prefix}-{hashlib.sha256(_canonical(obj)).hexdigest()[:16]}"
 
 
+# The capability a node certifies: what is taught, practised, assessed and grounded.
+# Title/stage/pitfalls are presentation; ``requires`` is ordering (its change is a
+# separate dependency impact, not a different capability).
+CAPABILITY_FIELDS = ("task", "outcomes", "skills", "practice", "source_refs", "exam_domain")
+
 # Fields that change what the learner agreed to learn, practise or be assessed on.
 # Presentation-only fields (stage label, pitfalls wording, inline lesson draft) are
 # excluded so cosmetic edits do not force re-approval; teaching content has its own
@@ -109,15 +147,81 @@ MATERIAL_NODE_FIELDS = ("id", "title", "task", "requires", "outcomes", "skills",
 
 
 def material_roadmap(plan: dict) -> dict:
-    return {
+    out = {
         "goal": plan.get("goal"),
         "sources": sorted(plan.get("sources") or []),
         "nodes": [{k: n.get(k) for k in MATERIAL_NODE_FIELDS} for n in plan.get("nodes") or []],
     }
+    if "generation_provenance" in plan:
+        out["generation_provenance"] = plan["generation_provenance"]
+    return out
 
 
 def roadmap_version(plan: dict) -> str:
     return digest("rm", material_roadmap(plan))
+
+
+def capability_version(node: dict) -> str:
+    return digest("cap", {k: node.get(k) for k in CAPABILITY_FIELDS})
+
+
+def capability_snapshot(plan: dict) -> dict:
+    return {n["id"]: {"version": capability_version(n), "requires": sorted(n.get("requires") or [])}
+            for n in plan.get("nodes") or [] if isinstance(n, dict) and n.get("id")}
+
+
+def _dependents(plan: dict, roots: set) -> dict:
+    """Transitive dependents of ``roots`` over ``requires`` -> {dependent: sorted upstream roots}."""
+    children = {}
+    for n in plan.get("nodes") or []:
+        for r in n.get("requires") or []:
+            children.setdefault(r, set()).add(n["id"])
+    out = {}
+    for root in roots:
+        stack, seen = [root], set()
+        while stack:
+            for child in children.get(stack.pop(), ()):
+                if child not in seen:
+                    seen.add(child)
+                    stack.append(child)
+                    out.setdefault(child, set()).add(root)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def capability_impact(approved: dict, new_plan: dict) -> dict:
+    """Per-node impact of approving ``new_plan`` against the approved capability snapshot.
+
+    ``approved`` is ``state["capabilities"]`` ({node: {"version", "requires", ...}}).
+    A version of ``None`` (legacy state whose old definition is known to differ) counts
+    as changed. Nothing here deletes anything: callers supersede current progress and
+    keep history.
+    """
+    new = capability_snapshot(new_plan)
+    nodes = {}
+    for nid, cur in new.items():
+        prev = (approved or {}).get(nid)
+        if prev is None:
+            change = "added"
+        elif prev.get("version") != cur["version"]:
+            change = "capability_changed"
+        elif sorted(prev.get("requires") or []) != cur["requires"]:
+            change = "prerequisites_changed"
+        else:
+            change = "unchanged"
+        nodes[nid] = {"change": change, "version": cur["version"],
+                      "previous_version": (prev or {}).get("version")}
+        if (prev or {}).get("basis") == "legacy_unverified":
+            nodes[nid]["unverified"] = True    # migrated from an unknown out-of-band roadmap
+    for nid in sorted(set(approved or {}) - set(new)):
+        nodes[nid] = {"change": "removed", "version": None, "previous_version": approved[nid].get("version")}
+    changed = {n for n, v in nodes.items() if v["change"] in {"capability_changed", "removed"}}
+    for dep, roots in _dependents(new_plan, changed).items():
+        if dep in nodes:
+            nodes[dep]["upstream_changed"] = roots
+    return {"initial": not approved, "nodes": nodes,
+            "summary": {**{c: sorted(n for n, v in nodes.items() if v["change"] == c)
+                           for c in ("capability_changed", "prerequisites_changed", "added", "removed")},
+                        "unverified": sorted(n for n, v in nodes.items() if v.get("unverified"))}}
 
 
 def diff_roadmaps(old: dict | None, new: dict) -> list[dict]:
@@ -193,6 +297,16 @@ def new_state(session_id: str, goal_text: str | None, now: str) -> dict:
         "misconception_counts": {},
         "node_progress": {},
         "idempotency": {},
+        # v2: capability-version bindings, content-identity exposure, grounding, reviews.
+        "capabilities": {},
+        "capability_history": [],
+        "lesson_bindings": {},
+        "item_bindings": {},
+        "exposure_records": {},
+        "freshness_reviews": {},
+        "review_queue": [],
+        "legacy_binding_pending": False,
+        "migration_log": [],
     }
 
 
@@ -209,7 +323,46 @@ def _v0_to_v1(state: dict) -> dict:
     return base
 
 
-_MIGRATIONS = {0: _v0_to_v1}
+def _v1_to_v2(state: dict) -> dict:
+    """Add v2 bookkeeping without rebuilding: every v1 key (known or not) is preserved.
+
+    Bindings that need files (roadmap, vault, manifest) are resolved by the action
+    layer on first open (``legacy_binding_pending``) so this stays pure.
+    """
+    out = copy.deepcopy(state)
+    # A state exported with down_v2_to_v1 carries its v2 data: restore it instead of
+    # re-deriving (re-deriving would bind superseded lessons/items to the current
+    # capability). Bindings for anything added under v1 are still resolved on open.
+    archived = out.pop("v2_archive", None)
+    if isinstance(archived, dict):
+        for key in V2_ONLY_KEYS:
+            if key in archived and key not in out:
+                out[key] = archived[key]
+    defaults = new_state(out.get("session_id"), None, out.get("updated_at") or "")
+    for key, value in defaults.items():
+        if key not in out:
+            out[key] = value
+    out["schema_version"] = 2
+    out["legacy_binding_pending"] = True
+    out["migration_log"] = list(out.get("migration_log") or []) + [
+        {"from": 1, "to": 2, "at": out.get("updated_at"),
+         "note": "v2 keys added; capability/lesson/item/exposure/review bindings resolved on first open"}]
+    return out
+
+
+_MIGRATIONS = {0: _v0_to_v1, 1: _v1_to_v2}
+V2_ONLY_KEYS = ("capabilities", "capability_history", "lesson_bindings", "item_bindings", "exposure_records",
+                "freshness_reviews", "review_queue", "legacy_binding_pending", "migration_log")
+
+
+def down_v2_to_v1(state: dict) -> dict:
+    """Reverse migration for export/rollback: v2-only keys are archived, never dropped."""
+    if state.get("schema_version") != 2:
+        raise StateVersionError("invalid_state", "down migration expects a v2 state")
+    out = copy.deepcopy(state)
+    out["v2_archive"] = {k: out.pop(k) for k in V2_ONLY_KEYS if k in out}
+    out["schema_version"] = 1
+    return out
 
 
 def migrate(state: dict) -> tuple[dict, list[int]]:
@@ -256,16 +409,28 @@ def validate(state: dict) -> list[str]:
     att = state["attempts"].get(att_id) if att_id else None
     if phase == "exam_active" and (not att or att.get("status") != "active" or state["attempt_status"] != "active"):
         errors.append("exam_active_without_active_attempt")
-    if phase == "assessment_pending" and (not att or att.get("status") not in {"submitted", "scoring_failed", "scored"}):
+    if phase == "assessment_pending" and (not att or att.get("status") not in
+                                          {"submitted", "scoring_failed", "awaiting_rubric", "scored"}):
         errors.append("assessment_pending_without_submitted_attempt")
     if att and att.get("item_version") != state["assessment_item_version"]:
         errors.append("frozen_item_version_mismatch")
-    actives = [a for a in state["attempts"].values()
-               if a.get("status") in {"active", "submitted", "scoring_failed", "scored"}]
+    actives = [a for a in state["attempts"].values() if a.get("status") in OPEN_ATTEMPT_STATUSES]
     if len(actives) > 1:
         errors.append("multiple_open_attempts")
     if actives and actives[0].get("attempt_id") != att_id:
         errors.append("open_attempt_not_active")
+    queue = state["review_queue"]
+    if not isinstance(queue, list) or any(not isinstance(q, dict) or q.get("status") not in REVIEW_STATUSES
+                                          for q in queue):
+        errors.append("bad_review_queue")
+    else:
+        pending = [q.get("node_id") for q in queue if q.get("status") in PENDING_REVIEW]
+        if len(pending) != len(set(pending)):
+            errors.append("duplicate_pending_review")
+        if len({q.get("review_id") for q in queue}) != len(queue):
+            errors.append("duplicate_review_id")
+    if not isinstance(state["capabilities"], dict):
+        errors.append("bad_capabilities")
     return errors
 
 
@@ -323,10 +488,12 @@ def remembered(state: dict, key: str | None):
     return state["idempotency"].get(key)
 
 
-def remember(state: dict, key: str | None, action: str, result) -> None:
+def remember(state: dict, key: str | None, action: str, result, request: str | None = None) -> None:
+    """Remember a key's first use; ``request`` (a digest of the arguments) binds the key
+    to that exact request so a reused key with different arguments is refused."""
     if key is None:
         return
     store = state["idempotency"]
-    store[key] = {"action": action, "result": result, "revision": state["revision"] + 1}
+    store[key] = {"action": action, "result": result, "revision": state["revision"] + 1, "request": request}
     while len(store) > IDEMPOTENCY_LIMIT:
         store.pop(next(iter(store)))

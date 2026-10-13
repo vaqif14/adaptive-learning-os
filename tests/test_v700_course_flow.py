@@ -332,7 +332,7 @@ class ExamIntegrityTests(CourseCase):
         turn = self.k.turn(self.sid)
         self.assertFalse(turn["teaching_allowed"])
         self.assertIn("EXAM LOCK", turn["agent_directive"])
-        self.assertEqual(set(turn["permitted_actions"]), {"submit_exam", "abandon_exam"})
+        self.assertEqual(set(turn["permitted_actions"]), {"submit_exam", "save_answers", "abandon_exam"})
 
     def test_duplicate_submit_and_finalize_count_once(self):
         self.exam_file(self.exam).write_text(EXAM_CORRECT, encoding="utf-8")

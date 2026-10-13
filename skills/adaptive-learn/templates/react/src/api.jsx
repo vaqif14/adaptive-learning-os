@@ -2,7 +2,7 @@
 // The server is the only source of truth: every mutation carries the revision the
 // UI last saw plus a per-click idempotency key, so a duplicate click, a retry
 // after a dropped response, or a stale second tab cannot double-apply anything.
-export const UI_SCHEMA = 1;
+export const UI_SCHEMA = 2;
 
 export class ApiError extends Error {
   constructor(status, body) {

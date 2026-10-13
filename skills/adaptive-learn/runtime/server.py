@@ -100,7 +100,10 @@ def _handler(cfg: ServerConfig):
             for h, v in _SECURITY_HEADERS:
                 self.send_header(h, v)
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # a pagehide beacon/reload can disconnect after the commit
 
         _STATIC_CT = {
             ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -261,6 +264,8 @@ def _handler(cfg: ServerConfig):
                     return self._send(200, self._course().lesson_view(sid, self._query().get("node", "")))
                 if path == "/api/course/export":
                     return self._send(200, self._course().export(sid))
+                if path == "/api/course/diagnostic-next":
+                    return self._send(200, self._course().diagnostic_next(sid))
             except CourseStateError as exc:
                 return self._course_error(exc)
             except (FileNotFoundError, KeyError, ValueError, OSError) as e:
@@ -284,6 +289,9 @@ def _handler(cfg: ServerConfig):
             kw = {"expected_revision": rev, "idempotency_key": data.get("idempotency_key")}
             routes = {
                 "/api/course/resume": lambda: k.resume(sid),
+                "/api/course/intake": lambda: k.record_intake(sid, {key: data[key] for key in ("goal", "stated_background") if key in data}, **kw),
+                "/api/course/diagnostic/answer": lambda: k.answer_diagnostic(sid, data.get("response"), data.get("assistance"), **kw),
+                "/api/course/diagnostic/skip": lambda: k.skip_diagnostic(sid, data.get("reason"), **kw),
                 "/api/course/activity": lambda: k.record_activity(sid, data.get("interval") or {}),
                 "/api/course/approve": lambda: k.approve_roadmap(sid, data.get("roadmap_version"), channel="ui",
                                                                  statement=data.get("statement"),
@@ -293,6 +301,9 @@ def _handler(cfg: ServerConfig):
                 "/api/course/self-explanation": lambda: k.self_explanation(sid, data.get("node"), data.get("text"), **kw),
                 "/api/course/practice/begin": lambda: k.begin_practice(sid, data.get("node"), **kw),
                 "/api/course/practice/check": lambda: k.practice_check(sid, data.get("node"), **kw),
+                "/api/course/practice/answer": lambda: k.practice_answer(sid, data.get("node"), data.get("answers"), **kw),
+                "/api/course/exam/answers": lambda: k.save_answers(sid, data.get("attempt_id"), data.get("answers"), **kw),
+                "/api/course/review/start": lambda: k.start_review(sid, data.get("node"), **kw),
                 "/api/course/exam/start": lambda: k.start_exam(sid, data.get("node"),
                                                                fast_track=bool(data.get("fast_track")), **kw),
                 "/api/course/exam/submit": lambda: k.submit_and_finalize(sid, data.get("attempt_id"), **kw),
@@ -301,6 +312,7 @@ def _handler(cfg: ServerConfig):
                 "/api/course/commitments": lambda: k.record_commitments(sid, data.get("commitments") or {}, **kw),
                 "/api/course/accountability": lambda: k.respond_accountability(sid, data.get("blocker"),
                                                                               data.get("note"), **kw),
+                "/api/course/recovery": lambda: k.record_recovery(sid, data.get("node"), data.get("plan"), **kw),
             }
             if path not in routes:
                 return self._send(404, {"error": "not_found"})
@@ -382,7 +394,7 @@ def _handler(cfg: ServerConfig):
                                         "max_concurrent": cfg.max_concurrent_runs})
             try:
                 return self._dispatch(data)
-            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
                 return self._send(400, {"error": "invalid_request", "detail": str(exc)[:200]})
             finally:
                 if heavy:

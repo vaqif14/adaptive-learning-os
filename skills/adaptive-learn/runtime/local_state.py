@@ -12,13 +12,19 @@ from .utils import read_json, write_json, fsync_directory
 
 STATE_FILES = {"cards.json", "learning-contract.json", "source-policy.json",
                "anchor-probe.json", "session.json", "notebooklm.json",
-               "course-state.json", "source-manifest.json"}
+               "course-state.json", "source-manifest.json",
+               # pre-migration snapshot written once in the migration's own transaction
+               "course-state.pre-v2.json"}
 
 
 def workspace_metadata(root):
     root = Path(root).resolve()
-    return {"directory": str(root), "frontend_directory": str(root / "frontend"),
-            "index_html": str(root / "index.html"), "roadmap_json": str(root / "roadmap.json")}
+    out = {"directory": str(root)}
+    for key, relative in (("frontend_directory", "frontend"), ("index_html", "index.html"),
+                          ("roadmap_json", "roadmap.json")):
+        if (root / relative).exists():
+            out[key] = str(root / relative)
+    return out
 
 
 def sync_tree(root):

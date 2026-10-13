@@ -120,7 +120,7 @@ These M4 primitives remain **contracts only**: there is no runnable simulator or
 | Teaching modes | intake, roadmap, socratic, checker, listener, examiner | `modes`, `prompt`, `intake` |
 | HTTP API + web app | Stdlib server (no deps). Session/route/verify/inspect/observability endpoints + split-screen Monaco workspace at `/`. Loopback runs auth-free; beyond loopback needs a token | `serve` |
 | Knowledge graph | Optional graphify `graph.json` provider | `graph-curriculum`, `graph-coverage`, `graph-anchors` |
-| Guarded course | Goal verification, per-resource NotebookLM validation, roadmap approval gate, grounded lessons, guided practice with CI checks, fresh frozen exams with a teaching lock, evidence-derived next mission, resume/accountability; local React app + bridge | `course …` (see [course runtime](skills/adaptive-learn/references/course-runtime.md)) |
+| Guarded course | Goal verification, per-resource NotebookLM validation, roadmap approval gate with capability-impact preview, fail-closed grounded lessons, guided practice (code CI checks or in-app concept questions), fresh frozen exams identified by content (Python, concept, scenario, rubric-judged free text) with a teaching lock, durable spaced-review queue, evidence-derived next mission, resume/accountability; local React app + bridge | `course …` (see [course runtime](skills/adaptive-learn/references/course-runtime.md)) |
 
 ## Course mode (quick start)
 
@@ -137,7 +137,7 @@ agent author lessons/items (`course author-lesson`, `course author-items`). Ever
 starts with `course turn`. During an exam, teaching and hints are locked in the app, the
 API (HTTP 423) and the agent CLI; refresh, Back, second tabs and restarts resume the same
 attempt. This is workflow enforcement on the learner's own device, not a proctored exam.
-Design, state machine, research basis and limits: [course runtime](skills/adaptive-learn/references/course-runtime.md);
+Design, state machine, research basis and limits: [course runtime](skills/adaptive-learn/references/course-runtime.md); research and review decisions: [learning-evidence decisions](skills/adaptive-learn/references/learning-evidence-decisions.md);
 demo script: [storyboard](skills/adaptive-learn/references/course-demo-storyboard.md).
 
 ## CLI

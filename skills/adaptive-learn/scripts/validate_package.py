@@ -21,9 +21,17 @@ required = [
     SKILL / "SKILL.md",
     SKILL / "scripts" / "alearn.py",
     SKILL / "runtime" / "session.py",
+    SKILL / "runtime" / "course.py",
+    SKILL / "runtime" / "course_state.py",
+    SKILL / "runtime" / "course_content.py",
+    SKILL / "runtime" / "course_sources.py",
+    SKILL / "runtime" / "course_journey.py",
+    SKILL / "runtime" / "course_recovery.py",
+    SKILL / "scripts" / "smoke_installed.py",
     SKILL / "runtime" / "learning_workspace.py",
     SKILL / "templates" / "react" / "src" / "App.jsx",
     SKILL / "templates" / "react" / "package.json",
+    SKILL / "templates" / "react" / "dist" / "index.html",
     SKILL / "runtime" / "router.py",
     SKILL / "runtime" / "policy.py",
     SKILL / "runtime" / "diagnosis.py",
@@ -107,7 +115,9 @@ for suffix in ("*.html", "*.js"):
     # decks/ = static offline presentation content (user-requested artifacts);
     # the invariant guards the RUNTIME against ad-hoc browser code, not content.
     _skip = {".learning", "decks", "build", "node_modules"}
-    found = [p for p in ROOT.rglob(suffix) if not (_skip & set(p.relative_to(ROOT).parts))]
+    compiled_ui = SKILL / "templates" / "react" / "dist"
+    found = [p for p in ROOT.rglob(suffix) if not (_skip & set(p.relative_to(ROOT).parts))
+             and compiled_ui not in p.parents]
     if found:
         print(f"Unexpected M4 renderer files for {suffix}: {[str(x.relative_to(ROOT)) for x in found]}")
         sys.exit(1)

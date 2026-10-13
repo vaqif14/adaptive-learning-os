@@ -208,7 +208,13 @@ class RuntimeTests(unittest.TestCase):
             s = k.start("Python references", LearningContract(goal="learn"))
             files = [p.suffix for p in k.dir(s["session_id"]).rglob("*") if p.is_file()]
             self.assertIn(".html", files)
-            self.assertNotIn(".js", files)
+            # New workspaces include the neutral local runtime UI; the separate
+            # static HTML roadmap remains available without running the server.
+            frontend = k.dir(s["session_id"]) / "workspace" / "frontend"
+            self.assertTrue((frontend / "dist" / "index.html").is_file())
+            self.assertTrue(list((frontend / "dist" / "assets").glob("*.js")))
+            self.assertFalse(any(p.suffix == ".js" for p in frontend.rglob("*")
+                                 if "dist" not in p.relative_to(frontend).parts))
 
 
 if __name__ == "__main__":
