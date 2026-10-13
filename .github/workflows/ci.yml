@@ -42,9 +42,17 @@ jobs:
         run: |
           python -m pip install --quiet playwright==1.61.0
           python -m playwright install --with-deps chromium
-      - name: Browser E2E (assertion-bearing; exits non-zero on any failed check)
-        run: python tests/e2e/course_ui_e2e.py --out e2e-artifacts
-      - name: Upload assertion log, screenshots and trace
+      - name: Install the course app build dependencies (CI tooling, from the template package.json)
+        run: |
+          mkdir -p "$RUNNER_TEMP/frontend-deps"
+          cp skills/adaptive-learn/templates/react/package.json "$RUNNER_TEMP/frontend-deps/"
+          npm install --prefix "$RUNNER_TEMP/frontend-deps" --no-audit --no-fund
+      - name: Browser E2E — course (assertion-bearing; exits non-zero on any failed check)
+        run: python tests/e2e/course_ui_e2e.py --out e2e-artifacts --node-modules "$RUNNER_TEMP/frontend-deps/node_modules"
+      - name: Browser E2E — learner journey
+        if: always()
+        run: python tests/e2e/course_journey_e2e.py --out e2e-journey --node-modules "$RUNNER_TEMP/frontend-deps/node_modules"
+      - name: Upload assertion logs, screenshots and traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -54,4 +62,7 @@ jobs:
             e2e-artifacts/vite-build.log
             e2e-artifacts/trace.zip
             e2e-artifacts/screenshots/
+            e2e-journey/*.json
+            e2e-journey/*.zip
+            e2e-journey/screenshots/
           retention-days: 14

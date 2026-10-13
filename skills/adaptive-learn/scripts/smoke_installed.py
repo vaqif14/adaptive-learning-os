@@ -74,10 +74,16 @@ def main():
         # not evidence of a generated or approved personalized teaching workspace.
         ui = Path(assets["built_ui"]).parent
         server_smoke = r'''
-import json, re, sys, threading
+import json, re, sys, threading, time
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
+T0 = time.monotonic()
+def step(name):
+    print(f"[{time.monotonic() - T0:6.2f}s] {name}", file=sys.stderr, flush=True)
+# Loopback only: never consult system proxy settings (macOS framework builds read them).
+urlopen = build_opener(ProxyHandler({})).open
+step("import runtime")
 from adaptive_learning_os.cli import _load_runtime_cli
 _load_runtime_cli()
 from runtime.server import ServerConfig, make_server
@@ -86,35 +92,46 @@ srv = make_server(ServerConfig(host="127.0.0.1", port=0, allow_anon=True,
 worker = threading.Thread(target=srv.serve_forever, daemon=True)
 worker.start()
 base = "http://127.0.0.1:" + str(srv.server_address[1])
+step("server listening " + base)
 try:
     with urlopen(base + "/", timeout=5) as response:
         html = response.read().decode()
         assert response.status == 200 and '<div id="root">' in html
     assets = re.findall(r'(?:src|href)="(/assets/[^"]+)"', html)
     assert assets, "bundled index must reference compiled assets"
+    step("index served")
     for asset in assets:
         with urlopen(base + asset, timeout=5) as response:
             assert response.status == 200 and response.read()
+    step("assets served")
     with urlopen(base + "/api/course/state", timeout=5) as response:
         state = json.load(response)
         assert state["session_id"] == sys.argv[2]
         assert state["generation_readiness"]["ready"] is False
         assert state["roadmap"]["approved"] is False
+    step("state served")
     try:
         urlopen(Request(base + "/api/course/resume", data=b"{}",
             headers={"Content-Type": "application/json", "Origin": "https://untrusted.invalid"}), timeout=5)
         raise AssertionError("cross-origin write was accepted")
     except HTTPError as response:
         assert response.code in {401, 403}, "cross-origin writes must fail authentication/authorization"
+        response.close()
+    step("cross-origin write refused")
     print(json.dumps({"status": "passed", "port": srv.server_address[1],
         "checks": ["optional neutral intake preview assets", "installed blocked generation state", "cross-origin write refusal"]}))
 finally:
     srv.shutdown()
     srv.server_close()
     worker.join(timeout=5)
+    step("server stopped")
 '''
-        server_result = subprocess.run([sys.executable, "-c", server_smoke, str(root), sid, str(ui)],
-                                      cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False)
+        try:
+            server_result = subprocess.run([sys.executable, "-c", server_smoke, str(root), sid, str(ui)],
+                                          cwd=root, env=env, text=True, capture_output=True, timeout=120,
+                                          check=False)
+        except subprocess.TimeoutExpired as exc:   # keep the per-step trace for diagnosis
+            raise RuntimeError(f"installed HTTP smoke timed out; stderr trace: {exc.stderr!r} stdout: {exc.stdout!r}")
         if server_result.returncode:
             raise RuntimeError("installed HTTP smoke failed: " + server_result.stdout + server_result.stderr)
         server_report = json.loads(server_result.stdout)
