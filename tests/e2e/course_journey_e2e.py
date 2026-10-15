@@ -453,6 +453,8 @@ def phase_recovery(page, ws, dist, run):
         srv.stop()
         srv.start()
         page.reload()
+        # the app loads in two steps (mode probe, then the learner chunk): wait until it rendered before the server is stopped again
+        page.get_by_role("button", name="Vəziyyəti yenilə", exact=True).wait_for()
         eng = base.state(page)["engagement"]["by_kind"]["teaching"]
         run.check("activity totals survive server restart without doubling", eng["active_seconds"] == 60 and eng["idle_seconds"] == 30 and eng["paused_seconds"] == 10, eng)
         run.check("time does not create independent mastery evidence", len(base.state(page)["evidence_refs"]) == 3

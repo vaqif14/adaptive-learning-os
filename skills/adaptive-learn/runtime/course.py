@@ -17,10 +17,14 @@ reviews stay in state, the vault/lesson archives and the ledger.
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -37,22 +41,25 @@ from .local_state import commit_state
 from .scheduling import half_life_days
 from .session import SessionKernel
 from .session_lock import session_lock
-from .utils import new_id, read_json, write_json
+from .utils import new_id, private_dirs, read_json, write_bytes, write_json
 
 STATE_FILE = "course-state.json"
 MANIFEST_FILE = "source-manifest.json"
 PRE_V2_ARCHIVE = "course-state.pre-v2.json"
+PRE_V3_ARCHIVE = "course-state.pre-v3.json"
 # A review counts as delayed evidence only if the LEDGER shows this much real spacing.
 REVIEW_MIN_OBSERVED_HOURS = 20
 RUBRIC_GRADERS = ("host_agent", "human")
 RUBRIC_CONFIDENCE = ("low", "medium", "high")
+_INTAKE_GATED = frozenset({"propose_roadmap", "approve_roadmap", "install_items", "install_lesson", "promote_build"})
 _NODE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _ATTEMPT = re.compile(r"att_[0-9a-f]{16}")
 _IVID = re.compile(r"iv_[0-9a-f]{16,32}")
 _KEY = re.compile(r"[A-Za-z0-9_.:-]{8,80}")
-HELP_KINDS = ("explain", "why", "worked_example", "hint", "alternative")
+HELP_KINDS = ("explain", "why", "worked_example", "hint", "alternative", "walkthrough", "ladder")
 REVIEW_FIRST_ACTIONS = frozenset({"start_mission", "help", "self_explanation", "begin_practice",
-                                  "practice_check", "practice_answer", "start_exam"})
+                                  "practice_check", "practice_answer", "practice_reveal", "practice_reset",
+                                  "start_exam"})
 ACTIVITY_KINDS = ("roadmap", "teaching", "practice", "help", "retry", "review", "exam", "other")
 BLOCKERS = ("time", "difficulty", "unclear_material", "motivation", "health_or_personal", "tooling", "other")
 
@@ -91,6 +98,37 @@ FORBIDDEN_TONE = ("tənbəl", "məsuliyyətsiz", "zəif tələbə", "ağılsız"
 
 def _utc(ts: str | None):
     return parse_time(ts) if ts else None
+
+
+class _FileJournal:
+    """Before-images of the files one install may write, so a failed install can put the session tree back."""
+
+    def __init__(self):
+        self.before: dict[Path, tuple[bytes, int] | None] = {}
+
+    @property
+    def captured(self) -> bool:
+        return bool(self.before)
+
+    def capture(self, paths) -> None:
+        for path in paths:
+            if path in self.before:
+                continue
+            if path.is_file() and not path.is_symlink():
+                self.before[path] = (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+            else:
+                self.before[path] = None
+
+    def restore(self, parking: Path, root: Path) -> None:
+        for path, image in self.before.items():
+            if image is not None:
+                if not path.is_file() or path.read_bytes() != image[0]:
+                    write_bytes(path, image[0])
+                    os.chmod(path, image[1])
+            elif path.exists() or path.is_symlink():      # created by the failed install: parked, not deleted
+                target = parking / path.relative_to(root)
+                private_dirs(target.parent)
+                os.rename(path, target)
 
 
 class CourseKernel:
@@ -137,7 +175,8 @@ class CourseKernel:
         state, applied = cs.migrate(raw)
         if applied:
             # The pre-migration state is archived in the same journaled transaction.
-            files = None if (d / PRE_V2_ARCHIVE).exists() else {PRE_V2_ARCHIVE: raw}
+            archive = PRE_V2_ARCHIVE if (raw.get("schema_version", 0) if isinstance(raw, dict) else 0) < 2 else PRE_V3_ARCHIVE
+            files = None if (d / archive).exists() else {archive: raw}
             self._commit(d, led, state, {"event_type": "course_state_migrated", "from_versions": applied}, files)
         errors = cs.validate(state)
         if errors:
@@ -159,7 +198,7 @@ class CourseKernel:
         commit_state(d, led, {"event_type": etype, "course_revision": state["revision"], **event},
                      {STATE_FILE: state, **(files or {})}, workspace_install=workspace_install)
 
-    def _mutate(self, sid, action, fn, *, expected_revision=None, idempotency_key=None, request=None):
+    def _mutate(self, sid, action, fn, *, expected_revision=None, idempotency_key=None, request=None, rehydrate=None):
         d = self.sk.dir(sid)
         with session_lock(d):
             d, led, state = self._open(sid)
@@ -172,14 +211,17 @@ class CourseKernel:
                         raise CourseStateError("phase_forbids_action", "idempotency key reused for a different action")
                     if prev.get("request") not in (None, _request_digest(request)):
                         raise CourseStateError("phase_forbids_action", "idempotency key reused with different arguments")
-                    return {"idempotent_replay": True, "action": action, "result": prev["result"],
+                    replayed = prev["result"]
+                    if rehydrate is not None:   # re-derive what the idempotency memory deliberately does not keep
+                        replayed = rehydrate(d, state, dict(replayed))
+                    return {"idempotent_replay": True, "action": action, "result": replayed,
                             "revision": state["revision"]}
             cs.check_revision(state, expected_revision)
             intake = self._intake_view(state)
-            if action in {"propose_roadmap", "approve_roadmap", "install_items", "install_lesson"} and intake["required"] and not intake["ready_to_plan"]:
+            if action in _INTAKE_GATED and intake["required"] and not intake["ready_to_plan"]:
                 raise CourseStateError("diagnostic_required")
-            if action in {"propose_roadmap", "approve_roadmap", "install_items", "install_lesson"} and intake["required"]:
-                gate_action = "install_content" if action in {"install_items", "install_lesson"} else action
+            if action in _INTAKE_GATED and intake["required"]:
+                gate_action = "install_content" if action in {"install_items", "install_lesson", "promote_build"} else action
                 cs.guard(state, gate_action)
                 readiness = self._generation_readiness(d, state, (request or {}).get("plan") if action == "propose_roadmap" else self._plan_safe(d),
                                                        check_generation_basis=action != "propose_roadmap")
@@ -287,8 +329,8 @@ class CourseKernel:
         bound = (state["lesson_bindings"].get(node_id) or {}).get("sources") or {}
         entries = {r.get("source_id"): r for r in (manifest or {}).get("resources", [])}
         problems, seen, checked = [], set(), {}
-        for part in cc.LESSON_PARTS:
-            for ref in lesson[part]["refs"]:
+        for part, part_refs in cc.lesson_ref_parts(lesson):
+            for ref in part_refs:
                 if ref.get("grounding") != "source":
                     continue
                 sid = ref.get("source_id")
@@ -1156,35 +1198,54 @@ class CourseKernel:
                 items = cc.validate_items(payload, node, self._lesson(d, node_id, state))
             except cc.ContentError as e:
                 raise CourseStateError("phase_forbids_action", f"content_invalid: {e}")
-            exposed = set(state["exposure"].get(node_id, [])) | {e.get("item_id") for e in self._exposures(state, node_id)}
-            current = state["item_versions"].setdefault(node_id, {})
-            for it in items:
-                if it["item_id"] in exposed and current.get(it["item_id"]) not in (None, it["item_version"]):
-                    raise CourseStateError("phase_forbids_action",
-                                           f"item {it['item_id']} was already shown; publish changes under a new item_id")
-            now = self._now()
-            cap = self._cap_version(state, node_id)
-            bindings = state["item_bindings"].setdefault(node_id, {})
-            freshness = {}
-            for it in items:
-                vault = self._vault(d, node_id)
-                cc.write_private(vault / f"{it['item_id']}.json", it)
-                archived = vault / "archive" / f"{it['item_version']}.json"
-                if not archived.exists():           # every published version stays retrievable
-                    cc.write_private(archived, it)
-                current[it["item_id"]] = it["item_version"]
-                fp = cc.fingerprint(it)
-                bindings[it["item_id"]] = {"item_version": it["item_version"], "capability_version": cap,
-                                           "content_fingerprint": fp["content"], "behavior_fingerprint": fp["behavior"],
-                                           "kind": fp["kind"], "bound_at": now, "basis": "installed"}
-                freshness[it["item_id"]] = cc.classify_freshness(fp, self._exposures(state, node_id))
-            state["course_version"] = self._course_version(state)
-            return ({"node_id": node_id, "items": {i["item_id"]: i["item_version"] for i in items},
-                     "freshness": freshness},
-                    {"event_type": "course_items_installed", "node_id": node_id,
-                     "item_versions": {i["item_id"]: i["item_version"] for i in items},
-                     "freshness": {k: v["status"] for k, v in freshness.items()}}, None)
+            return self._apply_items(d, state, node_id, items)
         return self._mutate(sid, "install_items", fn, request={'node': node_id, 'payload': payload}, **kw)
+
+    def _apply_items(self, d, state, node_id: str, items: list[dict]):
+        """Write validated items into the vault and bind them (shared by install_items and promote_build)."""
+        exposed = set(state["exposure"].get(node_id, [])) | {e.get("item_id") for e in self._exposures(state, node_id)}
+        current = state["item_versions"].setdefault(node_id, {})
+        for it in items:
+            if it["item_id"] in exposed and current.get(it["item_id"]) not in (None, it["item_version"]):
+                raise CourseStateError("phase_forbids_action",
+                                       f"item {it['item_id']} was already shown; publish changes under a new item_id")
+        now = self._now()
+        cap = self._cap_version(state, node_id)
+        bindings = state["item_bindings"].setdefault(node_id, {})
+        freshness = {}
+        for it in items:
+            vault = self._vault(d, node_id)
+            cc.write_private(vault / f"{it['item_id']}.json", it)
+            archived = vault / "archive" / f"{it['item_version']}.json"
+            if not archived.exists():           # every published version stays retrievable
+                cc.write_private(archived, it)
+            current[it["item_id"]] = it["item_version"]
+            fp = cc.fingerprint(it)
+            bindings[it["item_id"]] = {"item_version": it["item_version"], "capability_version": cap,
+                                       "content_fingerprint": fp["content"], "behavior_fingerprint": fp["behavior"],
+                                       "kind": fp["kind"], "bound_at": now, "basis": "installed"}
+            freshness[it["item_id"]] = cc.classify_freshness(fp, self._exposures(state, node_id))
+        state["course_version"] = self._course_version(state)
+        return ({"node_id": node_id, "items": {i["item_id"]: i["item_version"] for i in items},
+                 "freshness": freshness},
+                {"event_type": "course_items_installed", "node_id": node_id,
+                 "item_versions": {i["item_id"]: i["item_version"] for i in items},
+                 "freshness": {k: v["status"] for k, v in freshness.items()}}, None)
+
+    @staticmethod
+    def _retire_items(state, node_id: str, item_ids, now: str) -> list[str]:
+        """Take items that are live for ``node_id`` but not in the promoted build out of the exam pool. The vault files and
+        the bindings stay (history; nothing is deleted): the binding is marked retired, ``item_versions`` no longer lists
+        the item, so ``_items``/``_item_status`` never offer it again."""
+        gone = []
+        for item_id in sorted(item_ids):
+            version = (state["item_versions"].get(node_id) or {}).pop(item_id, None)
+            if version is None:
+                continue
+            binding = state["item_bindings"].setdefault(node_id, {}).setdefault(item_id, {"item_version": version})
+            binding["retired"] = {"at": now, "reason": "not_in_promoted_build", "item_version": version}
+            gone.append(item_id)
+        return gone
 
     def install_lesson(self, sid, node_id: str, payload: dict, **kw):
         def fn(d, led, state):
@@ -1194,29 +1255,337 @@ class CourseKernel:
                 lesson = cc.validate_lesson(payload, node, self._ground(d), self._items(d, node_id, state))
             except cc.ContentError as e:
                 raise CourseStateError("phase_forbids_action", f"content_invalid: {e}")
-            now = self._now()
-            lesson["installed_at"] = now
-            cc.write_private(self._lesson_path(d, node_id), lesson)
-            archived = self._lesson_path(d, node_id).parent / "archive" / f"{lesson['content_version']}.json"
-            if not archived.exists():               # superseded lessons stay readable as history
-                cc.write_private(archived, lesson)
-            self._materialize_lesson_files(d, node, lesson)
-            state["content_versions"][node_id] = lesson["content_version"]
-            manifest = self._manifest(d) or {}
-            shas = {r["source_id"]: r.get("content_sha256") for r in manifest.get("resources", []) if r.get("source_id")}
-            previous = state["lesson_bindings"].get(node_id)
-            state["lesson_bindings"][node_id] = {
-                "content_version": lesson["content_version"], "capability_version": self._cap_version(state, node_id),
-                "sources": {sid: shas.get(sid) for sid in sorted(cc.cited_sources(lesson))}, "bound_at": now,
-                "basis": "installed",
-                "history": ((previous or {}).get("history") or []) + ([{k: previous.get(k) for k in
-                            ("content_version", "capability_version", "sources", "bound_at", "basis")}] if previous else [])}
-            state["course_version"] = self._course_version(state)
-            return ({"node_id": node_id, "content_version": lesson["content_version"],
-                     "lesson": cc.public_lesson_summary(lesson, self._lesson_gate(d, state, node_id, lesson))},
-                    {"event_type": "course_lesson_installed", "node_id": node_id,
-                     "content_version": lesson["content_version"]}, None)
+            return self._apply_lesson(d, state, node_id, lesson)
         return self._mutate(sid, "install_lesson", fn, request={'node': node_id, 'payload': payload}, **kw)
+
+    def _apply_lesson(self, d, state, node_id: str, lesson: dict):
+        """Write a validated lesson and bind it to the capability and source hashes (shared with promote_build)."""
+        now = self._now()
+        lesson["installed_at"] = now
+        cc.write_private(self._lesson_path(d, node_id), lesson)
+        archived = self._lesson_path(d, node_id).parent / "archive" / f"{lesson['content_version']}.json"
+        if not archived.exists():               # superseded lessons stay readable as history
+            cc.write_private(archived, lesson)
+        self._materialize_lesson_files(d, self._node(self._plan(d), node_id), lesson)
+        state["content_versions"][node_id] = lesson["content_version"]
+        manifest = self._manifest(d) or {}
+        shas = {r["source_id"]: r.get("content_sha256") for r in manifest.get("resources", []) if r.get("source_id")}
+        previous = state["lesson_bindings"].get(node_id)
+        state["lesson_bindings"][node_id] = {
+            "content_version": lesson["content_version"], "capability_version": self._cap_version(state, node_id),
+            "sources": {sid: shas.get(sid) for sid in sorted(cc.cited_sources(lesson))}, "bound_at": now,
+            "basis": "installed",
+            "history": ((previous or {}).get("history") or []) + ([{k: previous.get(k) for k in
+                        ("content_version", "capability_version", "sources", "bound_at", "basis")}] if previous else [])}
+        state["course_version"] = self._course_version(state)
+        return ({"node_id": node_id, "content_version": lesson["content_version"],
+                 "lesson": cc.public_lesson_summary(lesson, self._lesson_gate(d, state, node_id, lesson))},
+                {"event_type": "course_lesson_installed", "node_id": node_id,
+                 "content_version": lesson["content_version"]}, None)
+
+    # --------------------------------------------------- studio promotion
+    def promote_build(self, sid, bundle: dict, *, rehearsal: bool = False, **kw):
+        """Install a validated Course Studio build through the normal admission path, all or nothing.
+
+        ``bundle`` carries the job identity, the exact build digest and its inputs, the targets and one payload per
+        unit. Every condition is re-checked here, under the session lock, from the ledger and the live course:
+        the approved roadmap version equals the build's, the owner acceptance and the signed full rules receipt are
+        in the ledger and bound to this digest and fresh, every unit validates against the live course (grounding,
+        freshness, separation, capability version), and the capability versions and source hashes the build was
+        authored against still hold. Nothing is written unless every node passes; the build adds no evidence.
+        ``rehearsal`` (rules-check scratch copy only) waives the owner acceptance and receipt; it never applies to a
+        real session because the CLI and StudioKernel never pass it."""
+        from . import studio_plan as plan_mod
+        from . import studio_receipt as receipts
+
+        def fn(d, led, state):
+            cs.guard(state, "install_content")
+            digest = bundle.get("build_digest")
+            if state["approved_roadmap_version"] != bundle.get("roadmap_version"):
+                raise CourseStateError("roadmap_version_mismatch",
+                                       f"approved {state['approved_roadmap_version']}, build {bundle.get('roadmap_version')}")
+            plan = self._plan(d)
+            if cs.roadmap_version(plan) != bundle.get("roadmap_version"):
+                raise CourseStateError("roadmap_version_mismatch", "the installed roadmap differs from the build's")
+            units = bundle.get("units") or []
+            wanted = {f"{kind}:{n['id']}" for n in plan["nodes"] for kind in ("lesson", "items")}
+            if {u.get("unit_id") for u in units} != wanted or len(units) != len(wanted):
+                raise CourseStateError("promotion_build_incomplete", "the build does not cover every roadmap node exactly once")
+            from .studio_jobs import build_digest_of
+            unit_digests = {u["unit_id"]: receipts.payload_digest(u["payload"]) for u in units}
+            if build_digest_of(unit_digests, bundle.get("roadmap_version"), bundle.get("sources") or {},
+                               bundle.get("policy_versions") or {}) != digest:
+                raise CourseStateError("promotion_digest_mismatch", "unit payloads do not hash to the build digest")
+            manifest = self._manifest(d) or {}
+            live_sources = {r.get("key"): r.get("content_sha256") for r in manifest.get("resources", [])}
+            for key, sha in (bundle.get("sources") or {}).items():
+                if live_sources.get(key) != sha:
+                    raise CourseStateError("promotion_source_changed", f"source {key} changed since the build was authored")
+            for nid, ver in (bundle.get("capabilities") or {}).items():
+                if self._cap_version(state, nid) != ver:
+                    raise CourseStateError("promotion_capability_changed", f"capability of {nid} changed since the build")
+            acceptance_ref = None
+            if not rehearsal:
+                acceptance_ref = receipts.require_promotion_conditions(led, bundle)
+            done = [b for b in state["studio"]["promoted_builds"] if b.get("build_digest") == digest]
+            if done:            # idempotent: the same verified build is already installed
+                return {"promoted": False, "already_promoted": True, "build_digest": digest,
+                        "nodes": done[-1].get("nodes", [])}, None, None
+            by_unit = {u["unit_id"]: u for u in units}
+            order = plan_mod.prerequisite_order(plan["nodes"])
+            validated = {}
+            ground = self._ground(d)
+            for node in order:
+                nid = node["id"]
+                lesson_payload = by_unit[f"lesson:{nid}"]["payload"]
+                items_payload = by_unit[f"items:{nid}"]["payload"]
+                try:
+                    new_items = cc.validate_items(copy.deepcopy(items_payload), node, None)
+                    ids = {i["item_id"] for i in new_items}
+                    separation = [i for i in self._items(d, nid, state) if i["item_id"] not in ids] + new_items
+                    lesson = cc.validate_lesson(copy.deepcopy(lesson_payload), node, ground, separation)
+                    items = cc.validate_items(copy.deepcopy(items_payload), node, lesson)
+                except _DRY_ERRORS as e:
+                    raise CourseStateError("promotion_revalidation_failed", f"{nid}: {_dry_message(e)}")
+                exposures = self._exposures(state, nid)
+                exposed = set(state["exposure"].get(nid, [])) | {e.get("item_id") for e in exposures}
+                current = state["item_versions"].get(nid, {})
+                freshness, problems = {}, []
+                for it in items:
+                    if it["item_id"] in exposed and current.get(it["item_id"]) not in (None, it["item_version"]):
+                        problems.append(f"item {it['item_id']} was already shown; publish changes under a new item_id")
+                    freshness[it["item_id"]] = cc.classify_freshness(cc.fingerprint(it), exposures)
+                verdict = plan_mod.evaluate_unit("items", items_payload, {"valid": not problems, "errors": problems,
+                                                                          "freshness": freshness}, bundle["targets"])
+                lesson_verdict = plan_mod.evaluate_unit("lesson", lesson_payload, {"valid": True}, bundle["targets"])
+                if not verdict["complete"] or not lesson_verdict["complete"]:
+                    raise CourseStateError("promotion_revalidation_failed",
+                                           f"{nid}: " + "; ".join(verdict["problems"] + lesson_verdict["problems"])[:400])
+                validated[nid] = (lesson, items)
+            installed, retired, now = {}, {}, self._now()
+            journal.capture(self._promotion_paths(d, order, validated))
+            for node in order:               # every node validated above: now install, lesson then items
+                nid = node["id"]
+                lesson, items = validated[nid]
+                live_before = set(state["item_versions"].get(nid) or {})
+                self._apply_lesson(d, state, nid, lesson)
+                self._apply_items(d, state, nid, items)
+                installed[nid] = {"content_version": lesson["content_version"],
+                                  "items": {i["item_id"]: i["item_version"] for i in items}}
+                gone = self._retire_items(state, nid, live_before - {i["item_id"] for i in items}, now)
+                if gone:
+                    retired[nid] = gone
+            record = {"promotion_id": new_id("prm"), "kind": "promotion", "job_id": bundle.get("job_id"),
+                      "build_digest": digest, "roadmap_version": bundle.get("roadmap_version"), "promoted_at": now,
+                      "nodes": [n["id"] for n in order], "installed": installed, "rehearsal": bool(rehearsal),
+                      "units": unit_digests, "acceptance": acceptance_ref, "retired_items": retired,
+                      "receipt_id": (bundle.get("receipt") or {}).get("receipt_id"), "evidence_records_added": 0}
+            state["promotion_history"].append(record)
+            state["studio"]["promoted_builds"].append({k: record[k] for k in ("job_id", "build_digest", "roadmap_version",
+                                                                                "promoted_at", "nodes", "rehearsal")})
+            state["studio"]["active_job"] = bundle.get("job_id")
+            return ({"promoted": True, "build_digest": digest, "nodes": record["nodes"], "installed": installed,
+                     "promotion_id": record["promotion_id"], "evidence_records_added": 0},
+                    {"event_type": "course_build_promoted", "job_id": bundle.get("job_id"), "build_digest": digest,
+                     "nodes": record["nodes"], "rehearsal": bool(rehearsal)}, None)
+        journal = _FileJournal()
+        committed = False
+        try:
+            result = self._mutate(sid, "promote_build", fn, request={"job": bundle.get("job_id"),
+                                                                     "digest": bundle.get("build_digest"),
+                                                                     "rehearsal": bool(rehearsal)}, **kw)
+            committed = True
+            return result
+        finally:
+            if not committed and journal.captured:
+                self._rollback_promotion(sid, bundle.get("build_digest"), journal)
+
+    def _promotion_paths(self, d, order, validated) -> list[Path]:
+        """Every file the install loop of ``promote_build`` may write (lessons, archives, vault items, practice files)."""
+        paths = []
+        for node in order:
+            nid = node["id"]
+            lesson, items = validated[nid]
+            mod, vault = self._module(d, nid), self._vault(d, nid)
+            lp = self._lesson_path(d, nid)
+            paths += [lp, lp.parent / "archive" / f"{lesson['content_version']}.json",
+                      mod / "practice" / "README.md", mod / "checks" / "practice_checks.py"]
+            if cc.item_kind(lesson["practice"]) == "python":
+                paths.append(mod / "submission" / lesson["practice"]["entry"])
+            for it in items:
+                paths += [vault / f"{it['item_id']}.json", vault / "archive" / f"{it['item_version']}.json"]
+        return paths
+
+    def _rollback_promotion(self, sid, digest, journal) -> None:
+        """A promotion that did not commit leaves the course as it was: files it overwrote get their old bytes back and
+        files it created are moved into course/rollback/ (never deleted). A promotion whose state DID commit (a crash
+        after the journal write; recovery completes it) is left alone."""
+        d = self.sk.dir(sid)
+        with session_lock(d):
+            with contextlib.suppress(OSError, ValueError, CourseStateError):
+                self.sk._recover_state(sid)
+                state = read_json(d / STATE_FILE)
+                if any(b.get("build_digest") == digest for b in (state.get("studio") or {}).get("promoted_builds", [])):
+                    return
+            journal.restore(d / "course" / "rollback" / new_id("rb"), d)
+
+    def record_promotion_check(self, sid, build_digest: str, summary: dict, **kw):
+        """Append the post-promotion rules-check outcome to ``promotion_history`` (a note, never evidence)."""
+        def fn(d, led, state):
+            entry = {"kind": "post_check", "build_digest": build_digest, "at": self._now(),
+                     **{k: summary.get(k) for k in ("receipt_id", "status", "scope", "failing_rules")}}
+            state["promotion_history"].append(entry)
+            return {"recorded": True, "build_digest": build_digest}, {"event_type": "course_promotion_checked",
+                                                                      "build_digest": build_digest,
+                                                                      "status": summary.get("status")}, None
+        return self._mutate(sid, "record_promotion_check", fn, request={"digest": build_digest, "summary": summary}, **kw)
+
+    # ------------------------------------------------- dry runs (read-only)
+    def _open_readonly(self, sid: str):
+        """Read-only open: verify the ledger and load the committed state. Unlike ``_open`` it never
+        recovers, migrates (in memory only) or reconciles, so it can never write a byte."""
+        d = self.sk.dir(sid)
+        led = self.sk.ledger(sid)
+        led.require_integrity()
+        path = d / STATE_FILE
+        if not path.exists():
+            raise CourseStateError("course_not_initialized", "run `alearn course init --session <id>` first")
+        state, _ = cs.migrate(read_json(path))
+        errors = cs.validate(state)
+        if errors:
+            raise CourseStateError("invalid_state", ",".join(errors))
+        return d, led, state
+
+    def _dry_context(self, sid: str, node_id: str):
+        d, led, state = self._open_readonly(sid)
+        if state["phase"] in cs.TEACHING_LOCKED_PHASES:
+            raise CourseStateError("exam_active")
+        if not state["roadmap_version"]:
+            raise CourseStateError("roadmap_not_approved", "no roadmap proposed yet")
+        plan = self._plan(d)
+        if plan.get("status") == "needs_curriculum_research":
+            raise CourseStateError("roadmap_not_approved", "no roadmap proposed yet")
+        return d, state, self._node(plan, node_id)
+
+    def validate_lesson_dry(self, sid, node_id: str, payload, *, staged_items=None) -> dict:
+        """Run the install_lesson validators without installing anything (no state, file or ledger write).
+
+        Separation is checked against the committed items plus ``staged_items`` (an items payload)."""
+        d = self.sk.dir(sid)
+        with session_lock(d):
+            d, state, node = self._dry_context(sid, node_id)
+            errors, items = [], self._items(d, node_id, state)
+            if staged_items is not None:
+                try:
+                    staged = cc.validate_items(copy.deepcopy(staged_items), node, None)
+                    ids = {i["item_id"] for i in staged}
+                    items = [i for i in items if i["item_id"] not in ids] + staged
+                except _DRY_ERRORS as e:
+                    errors.append(f"staged_items: {e}")
+            lesson = None
+            try:
+                lesson = cc.validate_lesson(copy.deepcopy(payload), node, self._ground(d), items)
+            except _DRY_ERRORS as e:
+                errors.append(_dry_message(e))
+            out = {"valid": lesson is not None and not errors, "errors": errors, "node_id": node_id, "kind": "lesson",
+                   "summary": {}, "content_version": None}
+            if out["valid"]:
+                shown = cc.public_lesson_summary(lesson)
+                out["summary"] = {"objective": shown["objective"], "success_criteria": shown["success_criteria"],
+                                  "practice_kind": shown["practice_kind"], "grounding": shown["grounding"],
+                                  "practice_task_id": lesson["practice"]["task_id"],
+                                  "walkthrough": (lesson.get("walkthrough") or {}).get("language"),
+                                  "ladder": bool(lesson.get("ladder")), "hint_ceiling": lesson.get("hint_ceiling"),
+                                  "cited_sources": sorted(s for s in cc.cited_sources(lesson) if s)}
+                out["content_version"] = lesson["content_version"]
+            return out
+
+    def validate_items_dry(self, sid, node_id: str, payload, *, staged_lesson=None) -> dict:
+        """Run the install_items validators + freshness classification without installing anything.
+
+        Separation is checked against the committed lesson, or ``staged_lesson`` (a lesson payload)."""
+        d = self.sk.dir(sid)
+        with session_lock(d):
+            d, state, node = self._dry_context(sid, node_id)
+            errors, lesson = [], self._lesson(d, node_id, state)
+            if staged_lesson is not None:
+                try:
+                    lesson = cc.validate_lesson(copy.deepcopy(staged_lesson), node, self._ground(d),
+                                                self._items(d, node_id, state))
+                except _DRY_ERRORS as e:
+                    errors.append(f"staged_lesson: {e}")
+            items = None
+            try:
+                items = cc.validate_items(copy.deepcopy(payload), node, lesson)
+            except _DRY_ERRORS as e:
+                errors.append(_dry_message(e))
+            out = {"valid": False, "errors": errors, "node_id": node_id, "kind": "items", "summary": {},
+                   "freshness": {}, "item_versions": {}}
+            if items is None:
+                return out
+            exposures = self._exposures(state, node_id)
+            exposed = set(state["exposure"].get(node_id, [])) | {e.get("item_id") for e in exposures}
+            current = state["item_versions"].get(node_id, {})
+            for it in items:
+                if it["item_id"] in exposed and current.get(it["item_id"]) not in (None, it["item_version"]):
+                    errors.append(f"item {it['item_id']} was already shown; publish changes under a new item_id")
+                out["freshness"][it["item_id"]] = cc.classify_freshness(cc.fingerprint(it), exposures)
+                out["item_versions"][it["item_id"]] = it["item_version"]
+            tally = {}
+            for f in out["freshness"].values():
+                tally[f["status"]] = tally.get(f["status"], 0) + 1
+            scopes = {}
+            for it in items:
+                scopes[it["scope"]] = scopes.get(it["scope"], 0) + 1
+            out["summary"] = {"count": len(items), "scopes": scopes, "freshness": tally,
+                              "items": [{"item_id": i["item_id"], "kind": cc.item_kind(i), "scope": i["scope"],
+                                         "item_version": i["item_version"]} for i in items]}
+            out["valid"] = not errors
+            return out
+
+    def studio_snapshot(self, sid) -> dict:
+        """Read-only facts the Course Studio binds a job to (no recovery, migration or reconcile writes)."""
+        d = self.sk.dir(sid)
+        with session_lock(d):
+            if not (d / STATE_FILE).exists():
+                return {"initialized": False, "session_id": sid, "phase": None, "exam_locked": False,
+                        "roadmap_proposed": False, "roadmap_version": None, "approved_roadmap_version": None,
+                        "plan": None, "capabilities": {}, "generation_provenance": None, "manifest_version": None,
+                        "resources": [], "ready": False, "blockers": ["course_not_initialized"],
+                        "directive": "Run `alearn course init --session <id>`; the learner's goal and diagnostic come first."}
+            d, led, state = self._open_readonly(sid)
+            plan = None
+            if state["roadmap_version"] and (d / "workspace" / "roadmap.json").exists():
+                plan = self._plan(d)
+                if plan.get("status") == "needs_curriculum_research":
+                    plan = None
+            manifest = self._manifest(d) or {}
+            readiness = self._generation_readiness(d, state, plan)
+            view = {"phase": state["phase"], "intake": self._intake_view(state), "generation_readiness": readiness,
+                    "next_mission": state["next_mission"]}
+            blockers = [] if plan else ["roadmap_not_proposed"]
+            if readiness["required"] and not readiness["ready"]:
+                blockers += readiness["blockers"]
+            resources = [{"key": r.get("key"), "source_id": r.get("source_id"), "title": r.get("title"),
+                          "kind": (r.get("expected") or {}).get("kind"), "status": r.get("status"),
+                          "stale": r.get("stale"), "content_sha256": r.get("content_sha256")}
+                         for r in manifest.get("resources") or []]
+            return {"initialized": True, "session_id": sid, "course_revision": state["revision"],
+                    "phase": state["phase"], "exam_locked": state["phase"] in cs.TEACHING_LOCKED_PHASES,
+                    "roadmap_proposed": plan is not None, "roadmap_version": state["roadmap_version"],
+                    "approved_roadmap_version": state["approved_roadmap_version"], "plan": plan,
+                    "capabilities": cs.capability_snapshot(plan) if plan else {},
+                    "generation_provenance": (plan or {}).get("generation_provenance"),
+                    "manifest_version": state["source_manifest_version"], "resources": resources,
+                    "ready": not blockers, "blockers": blockers, "directive": agent_directive(view),
+                    "intake_required": bool(view["intake"]["required"])}
+
+    def source_text(self, sid, source_id: str, content_sha256: str) -> str | None:
+        """Cached validated source text (hash-verified), or None when it no longer verifies."""
+        d = self.sk.dir(sid)
+        with session_lock(d):
+            text, problem = csrc.cached_text(d / "sources", source_id, content_sha256)
+            return None if problem else text
 
     def _materialize_lesson_files(self, d, node, lesson):
         """Learner-facing practice files only: brief, starter (never overwritten), visible checks."""
@@ -1266,9 +1635,18 @@ class CourseKernel:
             return {"node_id": node_id, "phase": "teaching"}, {"event_type": "course_mission_started", "node_id": node_id}, None
         return self._mutate(sid, "start_mission", fn, request={'node': node_id}, **kw)
 
-    def help(self, sid, node_id: str, kind: str, **kw):
+    def help(self, sid, node_id: str, kind: str, rung: str | None = None, **kw):
         if kind not in HELP_KINDS:
             raise CourseStateError("phase_forbids_action", f"help kind must be one of {HELP_KINDS}")
+        if kind == "ladder":
+            rung = rung or "worked"
+            if rung not in cc.LADDER_RUNGS:
+                raise CourseStateError("phase_forbids_action", f"ladder rung must be one of {cc.LADDER_RUNGS}")
+        elif rung is not None:
+            raise CourseStateError("phase_forbids_action", "a rung applies to the ladder only")
+        request = {'node': node_id, 'kind': kind}
+        if kind == "ladder":
+            request['rung'] = rung
 
         def fn(d, led, state):
             cs.guard(state, "help")
@@ -1298,11 +1676,28 @@ class CourseKernel:
                 alt = lesson["alternative_explanation"]
                 content = {"title": "Başqa yolla izah", "body": alt["text"], "example": alt["example"], "refs": refs(alt)}
                 prog["method"] = "alternative"
+            elif kind == "walkthrough":
+                # Watching earns no evidence: only provenance and a counter change.
+                wt = lesson.get("walkthrough")
+                if not wt:
+                    raise CourseStateError("walkthrough_missing")
+                sp["worked_example_shown"] = True
+                content = {**cc.public_walkthrough(wt), "refs": refs(wt),
+                           "note": "Bu nümayişdir; praktika və imtahan fərqli tapşırıqlardır. İzləmək sübut sayılmır."}
+            elif kind == "ladder":
+                ld = lesson.get("ladder")
+                if not ld:
+                    raise CourseStateError("ladder_missing")
+                sp["worked_example_shown"] = True
+                content = cc.public_ladder_rung(ld, rung)
+                content["note"] = "Pilləli təlim öyrətmə materialıdır; sübut sayılmır. Üçüncü pillə praktikanın özüdür."
             else:  # hint ladder (practice only)
                 if state["phase"] != "practice":
                     raise CourseStateError("phase_forbids_action", "hints belong to guided practice")
                 used = int(prog["help"].get("hints", 0))
                 hints = lesson["practice"]["hints"]
+                if "hint_ceiling" in lesson and used >= lesson["hint_ceiling"]:
+                    raise CourseStateError("hint_ceiling_reached")
                 if used >= len(hints):
                     content = {"title": "İpucu", "body": "Bütün ipuclarını görmüsən. İzahı və ya başqa yolla izahı aç.",
                                "level": used, "of": len(hints), "exhausted": True}
@@ -1314,7 +1709,7 @@ class CourseKernel:
                 prog["help"][kind] = int(prog["help"].get(kind, 0)) + 1
             return ({"kind": kind, "content": content, "support_provenance": dict(sp)},
                     {"event_type": "course_help_delivered", "node_id": node_id, "kind": kind}, None)
-        return self._mutate(sid, "help", fn, request={'node': node_id, 'kind': kind}, **kw)
+        return self._mutate(sid, "help", fn, request=request, **kw)
 
     def self_explanation(self, sid, node_id: str, text: str, **kw):
         if not isinstance(text, str) or not 10 <= len(text.strip()) <= 4000:
@@ -1346,7 +1741,11 @@ class CourseKernel:
                 raise CourseStateError("phase_forbids_action", "practice is for the active node")
             lesson = self._ready_lesson(d, state, node_id)
             prog = self._progress(state, node_id)
-            if not prog.get("practice"):
+            current = prog.get("practice")
+            if not current or current.get("revealed"):
+                if current:      # a revealed attempt stays as history; a new attempt id is issued
+                    prog.setdefault("practice_history", []).append(current)
+                    prog["help"]["hints"] = 0       # hints are per attempt: the ceiling must not shut out the new one
                 prog["practice"] = {"node_id": node_id, "practice_attempt_id": new_id("prc"), "checks_run": 0,
                                     "last_outcome": None}
             cs.set_phase(state, "practice", self._now())
@@ -1370,6 +1769,7 @@ class CourseKernel:
             if node_id != state["active_node_id"]:
                 raise CourseStateError("phase_forbids_action", "practice check is for the active node")
             lesson = self._ready_lesson(d, state, node_id)
+            self._refuse_revealed(state, node_id)
             if cc.item_kind(lesson["practice"]) != "python":
                 raise CourseStateError("phase_forbids_action", "this practice is answered in the app: use practice-answer")
             entry = lesson["practice"]["entry"]
@@ -1391,6 +1791,7 @@ class CourseKernel:
             if node_id != state["active_node_id"]:
                 raise CourseStateError("phase_forbids_action", "practice is for the active node")
             lesson = self._ready_lesson(d, state, node_id)
+            self._refuse_revealed(state, node_id)
             pr = lesson["practice"]
             if cc.item_kind(pr) == "python":
                 raise CourseStateError("phase_forbids_action", "this practice is code: use practice-check")
@@ -1407,6 +1808,111 @@ class CourseKernel:
                                          fingerprint=hashlib.sha256(canonical.encode()).hexdigest())
         return self._mutate(sid, "practice_answer", fn, request={'node': node_id, 'answers': answers}, **kw)
 
+    @staticmethod
+    def _refuse_revealed(state, node_id):
+        practice = (state["node_progress"].get(node_id) or {}).get("practice") or {}
+        if practice.get("revealed"):
+            raise CourseStateError("practice_revealed")
+
+    def practice_reveal(self, sid, node_id: str, confirm: bool = False, **kw):
+        """Explicit, confirmed reveal of the reference solution: the current practice attempt earns no credit.
+
+        Appends an observation (never evidence), marks the attempt revealed (later evidence is assisted with
+        ``ai_direct_answer_revealed``) and requires ``begin_practice`` to issue a new attempt id."""
+        def fn(d, led, state):
+            cs.guard(state, "practice_reveal")
+            if node_id != state["active_node_id"]:
+                raise CourseStateError("phase_forbids_action", "reveal is for the active node")
+            lesson = self._ready_lesson(d, state, node_id)
+            prog = self._progress(state, node_id)
+            practice = prog.get("practice")
+            if not practice:
+                raise CourseStateError("phase_forbids_action", "begin the practice before asking for the solution")
+            if confirm is not True:
+                raise CourseStateError("reveal_confirmation_required")
+            pr = lesson["practice"]
+            if practice.get("revealed"):
+                # Re-delivery (a lost response): the solution is returned again; no second observation, no event.
+                return self._reveal_payload(pr, node_id, state), None, None
+            if not self._reveal_observed(led, practice.get("practice_attempt_id")):
+                led.append("observation", {"capability_id": node_id, "verification": "reveal", "outcome": "unknown",
+                                           "correctness_checked": False, "mastery_eligible": False,
+                                           "attempt_id": practice.get("practice_attempt_id"), "task_id": pr["task_id"],
+                                           "note": "practice_solution_revealed; no credit for this practice attempt"},
+                           {"source": "course_practice_reveal"})
+            state["support_provenance"]["ai_direct_answer_revealed"] = True
+            practice["revealed"] = True
+            practice["revealed_at"] = self._now()
+            prog["help"]["reveal"] = int(prog["help"].get("reveal", 0)) + 1
+            self.sk.rebuild_projection(sid)
+            out = self._reveal_payload(pr, node_id, state)
+            return out, {"event_type": "course_practice_revealed", "node_id": node_id}, None
+        def rehydrate(d, state, replayed):
+            if self._ever_revealed(state, node_id):
+                lesson = self._ready_lesson(d, state, node_id)
+                replayed.update({k: v for k, v in self._reveal_payload(lesson["practice"], node_id, state).items()
+                                 if k in ("reference_solution", "answer_key")})
+            return replayed
+        return self._mutate(sid, "practice_reveal", fn, request={'node': node_id, 'confirm': confirm is True},
+                            rehydrate=rehydrate, **kw)
+
+    @staticmethod
+    def _ever_revealed(state, node_id) -> bool:
+        prog = state["node_progress"].get(node_id) or {}
+        return any((a or {}).get("revealed") for a in [prog.get("practice"), *(prog.get("practice_history") or [])])
+
+    @staticmethod
+    def _reveal_observed(led, attempt_id) -> bool:
+        """The reveal observation is appended before the state commit; a retry after a failed commit must not
+        record a second reveal for the same attempt."""
+        return attempt_id is not None and any(
+            r["record_type"] == "observation" and r["payload"].get("verification") == "reveal"
+            and r["payload"].get("attempt_id") == attempt_id for r in led.verified_records())
+
+    @staticmethod
+    def _reveal_payload(pr, node_id, state) -> dict:
+        out = {"node_id": node_id, "revealed": True, "kind": cc.item_kind(pr), "credit": 0,
+               "support_provenance": dict(state["support_provenance"]),
+               "note_az": ("Həll açıldı: bu praktika cəhdi üçün kredit verilmir. Davam etmək üçün yeni cəhd "
+                           "başla (begin_practice).")}
+        if cc.item_kind(pr) == "python":
+            out["reference_solution"] = pr["reference_solution"]
+        else:
+            out["answer_key"] = cc.answer_key(pr["questions"])
+        return out
+
+    def practice_reset(self, sid, node_id: str, **kw):
+        """Archive the learner's current submission file, then restore the starter. Nothing is deleted."""
+        def fn(d, led, state):
+            cs.guard(state, "practice_reset")
+            if node_id != state["active_node_id"]:
+                raise CourseStateError("phase_forbids_action", "reset is for the active node")
+            lesson = self._ready_lesson(d, state, node_id)
+            pr = lesson["practice"]
+            if cc.item_kind(pr) != "python":
+                raise CourseStateError("phase_forbids_action", "only a code practice has a file to reset")
+            mod = self._module(d, node_id)
+            path = mod / "submission" / pr["entry"]
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                raise CourseStateError("phase_forbids_action", f"submission/{pr['entry']} is not a regular file")
+            archived = None
+            starter = pr["starter_code"].encode("utf-8")
+            if path.is_file() and path.read_bytes() != starter:   # a retry after a failed commit must not archive the starter
+                stamp = self._dt().astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+                target = mod / "archive" / f"{stamp}-{pr['entry']}"
+                n = 1
+                while target.exists():
+                    n += 1
+                    target = mod / "archive" / f"{stamp}-{n}-{pr['entry']}"
+                write_bytes(target, path.read_bytes())
+                archived = str(target)
+            if not path.is_file() or path.read_bytes() != starter:
+                write_bytes(path, starter)
+            return ({"node_id": node_id, "reset": True, "archived": archived, "file": str(path),
+                     "note_az": "Əvvəlki kodun arxivə köçürüldü, başlanğıc fayl bərpa olundu."},
+                    {"event_type": "course_practice_reset", "node_id": node_id}, None)
+        return self._mutate(sid, "practice_reset", fn, request={'node': node_id}, **kw)
+
     def _record_practice(self, sid, led, state, node_id, results, fired, *, fmt, strength, fingerprint):
         """Shared bookkeeping for code and in-app practice: formative, never mastery."""
         passed = all(r["passed"] for r in results)
@@ -1419,6 +1925,8 @@ class CourseKernel:
             prog["method"] = "alternative"
         sp = dict(state["support_provenance"])
         practice = prog["practice"] or {}
+        if self._ever_revealed(state, node_id):   # sticky per node: a node switch resets the mission-level provenance,
+            sp["ai_direct_answer_revealed"] = True    # but the learner has still seen the solution
         practice["checks_run"] = int(practice.get("checks_run", 0)) + 1
         practice["last_outcome"] = "correct" if passed else "incorrect"
         prog["practice"] = practice
@@ -1617,8 +2125,7 @@ class CourseKernel:
                     raise CourseStateError("phase_forbids_action", "no answers saved yet")
                 code = json.dumps(given, sort_keys=True, ensure_ascii=False)
             snap = self._attempt_dir(d, attempt_id) / "submitted"
-            snap.mkdir(parents=True, exist_ok=True, mode=0o700)
-            (snap / att["entry"]).write_text(code, encoding="utf-8")
+            write_bytes(snap / att["entry"], code.encode("utf-8"))     # 0700 dirs (every parent) and a 0600 file, whatever the umask
             att["submission_sha256"] = hashlib.sha256(code.encode("utf-8")).hexdigest()
             att["submitted_at"] = self._now()
             att["status"] = "submitted"
@@ -2514,20 +3021,38 @@ class CourseKernel:
 
     def turn(self, sid) -> dict:
         """Agent turn hydration: authoritative state + the only permitted actions."""
+        promotion = self._studio_hook(sid, "try_auto_promote")
         view = self.resume(sid)
-        view["agent_directive"] = AGENT_DIRECTIVES[view["phase"]]
-        if view["intake"]["required"] and not view["intake"]["ready_to_plan"]:
-            view["agent_directive"] = ("Goal-first interviewer: " + view["intake"]["instruction_az"]
-                                       + " Prepare one scoped task via course diagnostic-probe, then judge the actual captured response via course diagnostic-judge; never fabricate learner work.")
-        elif view["generation_readiness"]["required"] and not view["generation_readiness"]["ready"]:
-            view["agent_directive"] = ("CLI-first preparation: resolve " + ", ".join(view["generation_readiness"]["blockers"])
-                                       + ". Ask the learner for exact goal/target clarification and actual qualified skip consent when needed; verify readable resources before proposing personalized HTML. Do not fabricate assent, diagnostic work or sources.")
-        elif (view.get("next_mission") or {}).get("type") == "recovery_check":
-            view["agent_directive"] = "Do not repeat the failed loop. Ask one neutral blocker question and agree a concrete changed recovery plan via course recovery; agreement is not completion evidence."
+        view["agent_directive"] = agent_directive(view)
         view["teaching_allowed"] = bool(view["roadmap"]["approved"] and not view["teaching_locked"] and not view["due_reviews"]
                                         and view["generation_readiness"]["ready"]
                                         and (view.get("next_mission") or {}).get("blocked_on") != "recovery_required")
+        receipt = self._studio_hook(sid, "turn_receipt")
+        if receipt is not None:
+            view["rules_receipt"] = receipt
+            if receipt.get("blocks_teaching"):
+                # A non-waivable rule fails for a PROMOTED build: the agent must see it before teaching on that build.
+                view["teaching_allowed"] = False
+                view["agent_directive"] = receipt["agent_directive"] + " " + view["agent_directive"]
+        if promotion is not None and promotion.get("attempted"):
+            view["studio_promotion"] = promotion
         return view
+
+    def _studio_hook(self, sid, name: str):
+        """Course Studio turn hooks (auto-promotion, rules receipt). A session without a studio is untouched and a
+        hook failure never blocks a learner turn: it is reported instead."""
+        d = self.sk.dir(sid)
+        if not (d / "studio").is_dir():
+            return None
+        from .studio import StudioKernel
+        from .studio_store import StudioError
+        try:
+            return getattr(StudioKernel(self.sk.workspace, clock=self.clock), name)(sid)
+        except StudioError as e:
+            return {"status": "studio_error", "error": e.code, "detail": e.detail, "attempted": name == "try_auto_promote"}
+        except (OSError, ValueError, KeyError) as e:
+            return {"status": "studio_error", "error": type(e).__name__, "detail": str(e)[:200],
+                    "attempted": name == "try_auto_promote"}
 
     def lesson_view(self, sid, node_id) -> dict:
         """Lesson overview for the UI (objective, criteria, practice brief). Locked during exams."""
@@ -2561,6 +3086,8 @@ class CourseKernel:
                                        "scenario_md": pr.get("scenario_md"), "hint_count": len(pr["hints"]),
                                        "questions": cc.public_questions(pr["questions"])}
                 out["self_explanation_prompt"] = lesson["self_explanation_prompt"]
+                out["practice_first"] = {"walkthrough": bool(lesson.get("walkthrough")), "ladder": bool(lesson.get("ladder")),
+                                         "hint_ceiling": lesson.get("hint_ceiling")}
             return out
 
     def _view(self, d, led, state, eng=None) -> dict:
@@ -2702,6 +3229,28 @@ class CourseKernel:
                     "migration_log": state["migration_log"], "ledger_integrity": led.integrity()}
 
     # --------------------------------------------------------- UI regeneration
+    def frontend_status(self, sid) -> dict:
+        """Read-only: does the session's frontend source match the shipped template? A session built before a template
+        change keeps serving its old bundle (``UI_SCHEMA_VERSION`` is unchanged), so a promoted studio build would show
+        without the walkthrough, ladder and reveal controls until the owner regenerates and rebuilds the UI."""
+        src = self.sk.dir(sid) / "workspace" / "frontend" / "src"
+        if not src.is_dir():
+            return {"present": False, "outdated": False}
+        template = Path(__file__).resolve().parents[1] / "templates" / "react" / "src"
+        outdated = []
+        for f in sorted(p for p in template.rglob("*") if p.is_file()):
+            mine = src / f.relative_to(template)
+            try:
+                same = mine.is_file() and mine.read_bytes() == f.read_bytes()
+            except OSError:
+                same = False
+            if not same:
+                outdated.append(f.relative_to(template).as_posix())
+        return {"present": True, "outdated": bool(outdated), "files": outdated[:10],
+                "next_step": (f"alearn course regenerate-ui --session {sid}, then `alearn course build-ui --session {sid}`: "
+                              "the learner's app predates this build's walkthrough, hint ladder and reveal controls")
+                if outdated else None}
+
     def regenerate_ui(self, sid) -> dict:
         """Refresh frontend code from the template; learner files, IDs and evidence untouched."""
         d = self.sk.dir(sid)
@@ -2733,8 +3282,29 @@ class CourseKernel:
 
 
 # ----------------------------------------------------------------- helpers
+_DRY_ERRORS = (cc.ContentError, AttributeError, TypeError, KeyError, ValueError, IndexError, RecursionError, OverflowError)
+
+
+def _dry_message(e: Exception) -> str:
+    return str(e) if isinstance(e, cc.ContentError) else f"malformed_payload: {type(e).__name__}: {e}"
+
+
+def agent_directive(view: dict) -> str:
+    """The one instruction the host agent should follow for this course view (pure)."""
+    directive = AGENT_DIRECTIVES[view["phase"]]
+    if view["intake"]["required"] and not view["intake"]["ready_to_plan"]:
+        directive = ("Goal-first interviewer: " + view["intake"]["instruction_az"]
+                     + " Prepare one scoped task via course diagnostic-probe, then judge the actual captured response via course diagnostic-judge; never fabricate learner work.")
+    elif view["generation_readiness"]["required"] and not view["generation_readiness"]["ready"]:
+        directive = ("CLI-first preparation: resolve " + ", ".join(view["generation_readiness"]["blockers"])
+                     + ". Ask the learner for exact goal/target clarification and actual qualified skip consent when needed; verify readable resources before proposing personalized HTML. Do not fabricate assent, diagnostic work or sources.")
+    elif (view.get("next_mission") or {}).get("type") == "recovery_check":
+        directive = "Do not repeat the failed loop. Ask one neutral blocker question and agree a concrete changed recovery plan via course recovery; agreement is not completion evidence."
+    return directive
+
+
 def _ref(result: dict) -> dict:
-    keep = ("attempt_id", "status", "node_id", "kind", "roadmap_version", "content_version", "manifest_version")
+    keep = ("attempt_id", "status", "node_id", "kind", "revealed", "roadmap_version", "content_version", "manifest_version")
     return {k: result[k] for k in keep if k in result and isinstance(result[k], (str, int, bool, type(None)))}
 
 

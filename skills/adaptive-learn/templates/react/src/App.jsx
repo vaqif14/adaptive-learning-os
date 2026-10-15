@@ -5,6 +5,7 @@ import Practice from './components/Practice.jsx';
 import Intake from './components/Intake.jsx';
 import { Exam, MissionCard, Result } from './components/Assessment.jsx';
 import { NODE_STATUS, resourceStatus } from './components/ui.jsx';
+import ConfirmDialog from './components/ConfirmDialog.jsx';
 import { ApiError, getLesson, getState, mutate, newKey, resume, UI_SCHEMA } from './api.jsx';
 import { ActivityTracker } from './activity.jsx';
 
@@ -30,6 +31,7 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [paused, setPaused] = useState(false);
   const [examConfirm, setExamConfirm] = useState(null);
+  const [dialog, setDialog] = useState(null);
   const [bootError, setBootError] = useState(null);
   const mainRef = useRef(null);
   const inFlight = useRef(false);
@@ -185,10 +187,13 @@ export default function App() {
 
   const confirmExam = (node, fastTrack) => { opener.current = document.activeElement; setExamConfirm({ node, fastTrack }); };
   const closeConfirm = () => setExamConfirm(null);
+  // Generic confirmation (reveal, reset): {title, text, confirmLabel, cancelLabel, onConfirm}. Focus starts on the safe choice.
+  const askConfirm = cfg => { opener.current = document.activeElement; setDialog(cfg); };
+  const runDialog = async () => { const cfg = dialog; setDialog(null); await cfg.onConfirm(); };
   // Focus goes back to the opener only after the page behind stopped being inert.
   useEffect(() => {
-    if (!examConfirm && opener.current) { opener.current.focus?.(); opener.current = null; }
-  }, [examConfirm]);
+    if (!examConfirm && !dialog && opener.current) { opener.current.focus?.(); opener.current = null; }
+  }, [examConfirm, dialog]);
   const startExam = async () => {
     const { node, fastTrack } = examConfirm;
     opener.current = null;
@@ -234,7 +239,7 @@ export default function App() {
     page = <Lesson key={route.id} view={view} nodeId={route.id} info={lesson} act={act} go={go} confirmExam={confirmExam} busy={busy} />;
   } else if (route.page === 'practice') {
     page = view.phase === 'practice' && view.active_node_id === route.id
-      ? <Practice key={route.id} view={view} nodeId={route.id} info={lesson} act={act} confirmExam={confirmExam} busy={busy} />
+      ? <Practice key={route.id} view={view} nodeId={route.id} info={lesson} act={act} confirmExam={confirmExam} confirm={askConfirm} busy={busy} />
       : <section><h1 tabIndex={-1}>Praktika</h1><p>Praktika aktiv mərhələ üçün başlayır.</p>
           <button type="button" className="primary" disabled={busy} onClick={async () => { if (await act('/api/course/practice/begin', { node: route.id })) refresh(); }}>Praktikaya başla</button></section>;
   } else if (route.page === 'exam') {
@@ -251,7 +256,7 @@ export default function App() {
 
   return <div className="app">
     <a className="skip" href="#main">Əsas məzmuna keç</a>
-    <div className="app-body" inert={examConfirm ? true : undefined}>
+    <div className="app-body" inert={examConfirm || dialog ? true : undefined}>
     <header>
       <a className="brand" href={intakeShell ? '#/intake' : '#/'}>{intakeShell ? 'Tanışlıq' : '◈ Adaptive Learning'}</a>
       {!intakeShell && !generationRequired && <nav aria-label="Bölmələr">
@@ -270,29 +275,9 @@ export default function App() {
     <footer>{intakeShell ? 'Bu, tanışlıq ekranıdır; kurs hələ yaradılmayıb.' : 'Vəziyyət yalnız lokal runtime-da saxlanır.'} (revision {view.revision}). {view.honest_boundaries_az[0]}</footer>
     </div>
     {examConfirm && <ConfirmDialog onConfirm={startExam} onCancel={closeConfirm} />}
+    {dialog && <ConfirmDialog {...dialog} onConfirm={runDialog} onCancel={() => setDialog(null)} />}
     <div className="toast" role="status" aria-live="polite">{toast && <><span>{toast}</span> <button type="button" onClick={() => setToast(null)} aria-label="Bağla">×</button></>}</div>
   </div>;
-}
-
-// Modal confirm: focus starts on the primary action, Tab cycles inside, Escape cancels,
-// the page behind is inert, and focus returns to the opener on cancel.
-function ConfirmDialog({ onConfirm, onCancel }) {
-  const ref = useRef(null);
-  useEffect(() => { ref.current?.querySelector('button')?.focus(); }, []);
-  const onKey = e => {
-    if (e.key === 'Escape') { e.preventDefault(); onCancel(); return; }
-    if (e.key !== 'Tab') return;
-    const items = [...ref.current.querySelectorAll('button')];
-    const i = items.indexOf(document.activeElement);
-    if (e.shiftKey && i <= 0) { e.preventDefault(); items[items.length - 1].focus(); }
-    else if (!e.shiftKey && i === items.length - 1) { e.preventDefault(); items[0].focus(); }
-  };
-  return <div className="modal" role="dialog" aria-modal="true" aria-labelledby="exam-confirm" aria-describedby="exam-confirm-text"
-              onKeyDown={onKey} ref={ref}>
-    <div className="card"><h2 id="exam-confirm">Müstəqil yoxlamaya başlayaq?</h2>
-      <p id="exam-confirm-text">Görmədiyin yeni tapşırıq veriləcək. Cəhd bitənə qədər izah və ipucu bağlı olacaq; yarımçıq çıxsan, cəhd uğur kimi sayılmayacaq.</p>
-      <button type="button" className="primary" onClick={onConfirm}>Başla</button>{' '}
-      <button type="button" onClick={onCancel}>Hələ yox</button></div></div>;
 }
 
 function Home({ view, act, go, confirmExam, busy }) {

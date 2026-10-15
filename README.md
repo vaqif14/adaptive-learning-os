@@ -121,6 +121,7 @@ These M4 primitives remain **contracts only**: there is no runnable simulator or
 | HTTP API + web app | Stdlib server (no deps). Session/route/verify/inspect/observability endpoints + split-screen Monaco workspace at `/`. Loopback runs auth-free; beyond loopback needs a token | `serve` |
 | Knowledge graph | Optional graphify `graph.json` provider | `graph-curriculum`, `graph-coverage`, `graph-anchors` |
 | Guarded course | Goal verification, per-resource NotebookLM validation, roadmap approval gate with capability-impact preview, fail-closed grounded lessons, guided practice (code CI checks or in-app concept questions), fresh frozen exams identified by content (Python, concept, scenario, rubric-judged free text) with a teaching lock, durable spaced-review queue, evidence-derived next mission, resume/accountability; local React app + bridge | `course …` (see [course runtime](skills/adaptive-learn/references/course-runtime.md)) |
+| Course Studio | Background course production for owners: durable job, work orders, validator-only admission into non-servable staging, a regenerated 10-rule gate with signed receipts, a handover dossier, owner acceptance bound to the build digest, promotion into the live course; practice-first lesson parts (walkthrough, faded ladder, hint ceiling, reveal); opt-in `claude`/`codex` runners; owner web UI | `studio …`, `rules-check` (see [course studio](skills/adaptive-learn/references/course-studio.md)) |
 
 ## Course mode (quick start)
 
@@ -139,6 +140,79 @@ API (HTTP 423) and the agent CLI; refresh, Back, second tabs and restarts resume
 attempt. This is workflow enforcement on the learner's own device, not a proctored exam.
 Design, state machine, research basis and limits: [course runtime](skills/adaptive-learn/references/course-runtime.md); research and review decisions: [learning-evidence decisions](skills/adaptive-learn/references/learning-evidence-decisions.md);
 demo script: [storyboard](skills/adaptive-learn/references/course-demo-storyboard.md).
+
+## Course Studio (owner quick start)
+
+The studio prepares a course in the background and hands the finished work over for
+review. The host agent (or an opt-in runner) is the only author; its output is untrusted
+data admitted only through the validators into staging the learner cannot see. The
+learner still approves the exact roadmap version. Everything below is local; the runtime
+has no network client and calls no model. Replace `<sid>` with the course session id.
+
+```bash
+./alearn --workspace . course init --session <sid>      # intake, sources and roadmap come first
+./alearn --workspace . studio init --session <sid>      # create the build job (needs_learner until prerequisites exist)
+./alearn --workspace . studio plan --session <sid>      # plan units from the proposed roadmap
+
+# A. inline loop: the host agent in this session authors each order
+./alearn --workspace . studio next-task --session <sid>                    # order | idle | needs_learner | blocked | done
+./alearn --workspace . studio submit --session <sid> --order <order>       # reads the order's out/result.json
+
+# B. or a detached background worker (plans, runs the gate, submits inbox results; authors only with an enabled runner)
+./alearn --workspace . studio start --session <sid> --detach
+./alearn --workspace . studio status --session <sid>                       # job, per-unit progress, worker heartbeat
+./alearn --workspace . studio notifications --session <sid>                # pull notifications; nothing is pushed
+
+# owner review (separate process and credential)
+export ALEARN_OWNER_TOKEN="$(openssl rand -base64 36)"                     # >= 24 characters, not ADAPTIVE_API_TOKEN
+./alearn --workspace . studio serve --session <sid>                        # http://127.0.0.1:8778, loopback, token required
+
+./alearn --workspace . studio handover --session <sid>                     # dossier: R1-R10 table, NOT-verified and absent lists
+./alearn --workspace . studio accept --session <sid> --digest <build_digest> --statement "<your statement>"
+./alearn --workspace . studio promote --session <sid>                      # or the learner's next `course turn`
+```
+
+- **Gate.** `./alearn --workspace . rules-check --session <sid> --job <job> --scope quick|full`
+  recomputes the ten rules from scratch (45 probes, each with a negative control; dynamic
+  probes run on a scratch copy and the real session must stay byte-identical). Exit 0 all
+  pass, 2 a rule failed, 3 probe error or broken suite (never a pass). A receipt states
+  that the invariants hold under those probes. It does not prove that the course teaches well.
+- **Handover and acceptance.** `studio handover` writes `HANDOVER.md`/`HANDOVER.json` for the
+  current build digest and marks a failing build BLOCKED. `accept` is refused when the receipt
+  is stale or failing and records your statement against that exact digest. Acceptance is a
+  text statement from the terminal or the owner UI, not cryptographic proof of who gave it;
+  anything that can run the CLI or knows the owner token can issue it. The owner UI records
+  the acceptance and leaves promotion to `studio promote` or the learner's next `course turn`.
+  `studio reject --node <id> --note "..."` re-opens one node with your note as the fix order.
+- **Runners (opt-in, off by default).** `studio runners configure --session <sid> --runner claude|codex --confirm --statement "..."`
+  lets the studio launch your locally installed CLI. What leaves the machine: the work order
+  (node spec, targets, earlier errors) and the validated public source text of the node go to
+  the vendor's hosted model under your own CLI login (Anthropic for claude, OpenAI for codex).
+  Private sources are included only if the job was created with `studio init --allow-private-sources`.
+  Learner answers, evidence, the ledger, the item vault and secrets are not sent. Neither runner
+  is network-isolated; see [privacy](skills/adaptive-learn/references/privacy.md). Inspect with
+  `studio runners show`, switch off with `studio runners disable --runner claude|codex`, check
+  everything with `studio doctor`. A runner binary whose hash changed is not executed until you reconfigure.
+  Runner output is code the studio executes while validating it, so a runner dispatches only when the
+  OS sandbox works (macOS Seatbelt `sandbox-exec`, Linux `bwrap`): every verifier child then runs
+  without network, without writes outside its run directory and without reads of your home, temp or
+  state directories (`studio doctor` shows `os_sandbox`; R10 proves it on every full gate).
+- **Scheduling.** `studio tick` is one worker iteration; `studio schedule-print --every-minutes N`
+  prints (and installs nothing) a launchd plist and, when expressible, a crontab line.
+- **Control.** `studio pause|resume|cancel|rebase` (`rebase` after the roadmap, a source or a
+  capability changed; unchanged units are reused). Nothing is deleted: superseded files are renamed into
+  `<session>/studio/archive/`.
+- **Learner side of a promoted build.** Walkthrough, faded ladder, hint ceiling, reveal and reset are
+  described in the [course runtime](skills/adaptive-learn/references/course-runtime.md) (section 7a).
+  Watching creates no evidence; reveal gives zero credit for that attempt.
+
+Honest limits: no empirical outcome evidence; Azerbaijani wording has had no native review;
+free-text judgments by the host agent stay provisional; source grounding is lexical (quote present,
+meaning unchecked); the "fresh item" thresholds are uncalibrated; walkthrough prose has not been
+read by a human, only its code output is checked in the sandbox; the claude runner's JSON envelope
+and the codex permission profile were not exercised with a live model call. The authoritative lists are
+in every handover. Details: [course studio](skills/adaptive-learn/references/course-studio.md),
+[local operations](skills/adaptive-learn/references/local-operations.md).
 
 ## CLI
 

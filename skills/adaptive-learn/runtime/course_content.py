@@ -29,7 +29,10 @@ accidental exposure and keeps the app/agent from leaking them, nothing more.
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
+import itertools
+import keyword
 import math
 import re
 import unicodedata
@@ -50,6 +53,13 @@ QUESTION_TYPES = ("single_choice", "multi_choice", "ordering", "numeric")
 KIND_FORMAT = {"concept": "free_recall", "scenario": "scenario_performance", "free_text": "explanation"}
 SELECTED_ONLY_FORMAT = "recognition_mcq"
 FREE_TEXT_LIMITS = (20, 6000)
+# Practice-first lesson parts (course-studio.md section 7).
+WALKTHROUGH_LABEL_AZ = "Agent tərəfindən yazılmış, mənbəyə əsaslanan nümayiş"
+WALKTHROUGH_LANGUAGES = ("python", "none")
+WALKTHROUGH_MIN_STEPS = 3
+WALKTHROUGH_MIN_CHECKPOINTS = 2
+LADDER_BLANK = "___"
+LADDER_RUNGS = ("worked", "completion")
 # Freshness heuristics (policy-versioned so thresholds can change without rewriting
 # history). They are design heuristics to calibrate on real item pairs, not findings.
 FRESHNESS_POLICY = "fresh-v1"
@@ -530,6 +540,9 @@ def validate_lesson(lesson: dict, node: dict, ground, items: list[dict]) -> dict
     if not isinstance(hints, list) or not hints or not all(isinstance(h, str) and h.strip() for h in hints):
         raise ContentError("practice.hints needs a non-empty hint ladder")
     kind = item_kind(pr)
+    ceiling = lesson.get("hint_ceiling")
+    if "hint_ceiling" in lesson and (type(ceiling) is not int or not 1 <= ceiling <= len(hints)):
+        raise ContentError("hint_ceiling must be an integer between 1 and the number of practice hints")
     if kind in ("concept", "scenario"):
         mis = _named_misconceptions(pr.get("misconceptions"), "practice.misconceptions")
         out["practice"] = {"task_id": pr["task_id"], "kind": kind, "hints": hints,
@@ -565,6 +578,15 @@ def validate_lesson(lesson: dict, node: dict, ground, items: list[dict]) -> dict
         _self_test(out["practice"], "practice")
     else:
         _self_test_questions(out["practice"], "practice")
+    # Optional practice-first parts (validated whenever present; keys are added only then so the
+    # content version of a legacy lesson is unchanged).
+    if "hint_ceiling" in lesson:
+        out["hint_ceiling"] = ceiling
+    if lesson.get("walkthrough") is not None:
+        out["walkthrough"] = _walkthrough(lesson["walkthrough"], out["practice"], items, ground)
+    if lesson.get("ladder") is not None:
+        out["ladder"] = _ladder(lesson["ladder"], out["practice"], items)
+    _assert_text_no_leak(out, _leak_targets(out["practice"], items), "lesson")
     out["content_version"] = digest("lc", out)
     return out
 
@@ -597,6 +619,7 @@ def validate_items(payload: dict, node: dict, lesson: dict | None) -> list[dict]
                               lesson["worked_example"].get("result", ""), lesson["practice"]["prompt_md"]])
             _assert_separate(shown, practice_signatures(lesson["practice"]), norm,
                              f"{path} overlaps the worked example/practice; an exam item must be new")
+            _assert_no_teaching_leak(lesson, norm, path)
         if kind == "python":
             _self_test(norm, path)
         elif kind != "free_text":
@@ -618,6 +641,503 @@ def _assert_separate(shown: str, shown_sigs: set, item: dict, message: str) -> N
     if (shown_sigs & set(fingerprint(item)["sigs"]) or similarity(shown, item["prompt_md"]) >= 0.35
             or similarity(canonical_text(shown), surface) >= 0.35 or _norm(item["prompt_md"])[:80] in _norm(shown)):
         raise ContentError(message)
+
+
+# --------------------------------------------------------------------------- practice-first parts
+_PERSON_KEYS = frozenset({"expert", "expert_name", "author", "author_name", "instructor", "presenter", "narrator",
+                          "speaker", "teacher", "person", "by", "byline", "attribution", "credit", "credited_to",
+                          "quote_author", "name", "persona"})
+_ROLE = (r"(?:expert|instructor|author|presenter|narrator|speaker|teacher|professor|prof|dr|mr|mrs|ms|engineer|"
+         r"ekspert|müəllim|müəllif|təlimçi|mühəndis|aparıcı|spiker)")
+_NAME = r"[A-ZƏÖÜĞİŞÇ][\wəöüğışç'’-]+"
+# A role word followed by a capitalised name ("expert Jane Roe", "Dr. Roe", "müəllim Əli Vəliyev").
+# Heuristic: it catches the common attributions; the hard rule is the closed key set.
+_PERSON_TEXT = re.compile(rf"(?i:\b{_ROLE}\b\.?)\s+{_NAME}(?:\s+{_NAME})?")
+# A bare attributed name needs no role word: "Andrew Ng deyir ki ...", "... hazırlayıb: Jane Roe". Two capitalised
+# words followed by an attribution verb or postposition, or two capitalised words in the middle of a sentence (after a
+# lower-case word) that are not a known technical term. Heuristic like the role form; flag false positives for review.
+_ATTRIBUTION = (r"(?:deyir|demişdir|danışır|izah\s+edir|izah\s+edib|göstərir|göstərib|hazırlayıb|hazırlamışdır|yazıb|"
+                r"yazmışdır|təqdim\s+edir|təqdim\s+edib|söyləyir|bildirir|tərəfindən|adından|fikrincə|sözlərinə\s+görə)")
+_PERSON_ATTRIBUTED = re.compile(rf"(?<![\wəöüğışç]){_NAME}\s+{_NAME}\s+{_ATTRIBUTION}\b")
+_PERSON_MIDSENTENCE = re.compile(rf"(?<=[a-zəöüğışç,:;] )({_NAME})\s+({_NAME})(?![\wəöüğışç'’-])")
+_TECH_TERMS = frozenset({"python", "numpy", "pandas", "scipy", "jupyter", "github", "google", "notebook", "notebooklm",
+                         "machine", "learning", "deep", "data", "science", "open", "source", "linux", "windows", "macos",
+                         "unix", "ubuntu", "docker", "kaggle", "colab", "openai", "anthropic", "claude", "chatgpt",
+                         "stack", "overflow", "visual", "studio", "code", "pytorch", "tensorflow", "azərbaycan",
+                         "bakı", "avropa", "asiya", "amerika", "birləşmiş", "ştatlar", "krallığı", "respublikası",
+                         "dövləti", "universiteti", "təhsil", "nazirliyi", "internet", "web", "api", "http", "json",
+                         "html", "css", "sql", "unicode", "ascii", "utf"})
+
+
+def _names_a_person(text: str) -> bool:
+    if _PERSON_TEXT.search(text) or _PERSON_ATTRIBUTED.search(text):
+        return True
+    for m in _PERSON_MIDSENTENCE.finditer(text):
+        first, second = m.group(1), m.group(2)
+        if first.casefold() in _TECH_TERMS or second.casefold() in _TECH_TERMS or first.isupper() or second.isupper():
+            continue
+        return True
+    return False
+
+
+_TEXT_SKIP_KEYS = frozenset({"refs", "code", "wrong_code", "expected_output", "label", "template", "blanks"})
+_WALKTHROUGH_KEYS = frozenset({"title", "scenario_md", "language", "steps", "mistake", "transcript_md", "refs", "label"})
+_STEP_KEYS = frozenset({"explain_md", "code", "checkpoint", "predict"})
+_MISTAKE_KEYS = frozenset({"step", "wrong_code", "symptom", "fix_explain"})
+_LADDER_KEYS = frozenset({"worked", "completion", "independent"})
+
+
+def _closed_keys(obj, allowed, path):
+    if not isinstance(obj, dict):
+        raise ContentError(f"{path} must be an object")
+    for key in obj:
+        if str(key).casefold() in _PERSON_KEYS:
+            raise ContentError(f"{path}.{key}: a walkthrough is agent-authored; no field may name a real person or expert")
+    unknown = sorted(str(k) for k in obj if k not in allowed)
+    if unknown:
+        raise ContentError(f"{path} has unknown fields {unknown}")
+
+
+def _reject_named_people(value, path):
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if key not in _TEXT_SKIP_KEYS:
+                _reject_named_people(inner, f"{path}.{key}")
+    elif isinstance(value, list):
+        for i, inner in enumerate(value):
+            _reject_named_people(inner, f"{path}[{i}]")
+    elif isinstance(value, str) and _names_a_person(value):
+        raise ContentError(f"{path} names a real person or expert; walkthroughs must not be attributed to anyone")
+
+
+def _out_norm(text) -> str:
+    """Stdout comparison form: line endings unified, trailing whitespace per line and at the end removed."""
+    return "\n".join(line.rstrip() for line in (text or "").replace("\r\n", "\n").split("\n")).rstrip()
+
+
+def _cumulative_code(steps: list, upto: int, replace: tuple | None = None) -> str:
+    """Code of steps 1..upto joined in order; ``replace=(step_number, code)`` swaps one step's code."""
+    parts = []
+    for number, step in enumerate(steps[:upto], 1):
+        code = replace[1] if replace and replace[0] == number else step.get("code")
+        if isinstance(code, str) and code.strip():
+            parts.append(code.rstrip("\n"))
+    return "\n".join(parts) + "\n" if parts else ""
+
+
+def walkthrough_code(walkthrough: dict) -> str:
+    return _cumulative_code(walkthrough["steps"], len(walkthrough["steps"]))
+
+
+def fill_blanks(template: str, blanks: list) -> str:
+    parts = template.split(LADDER_BLANK)
+    if len(parts) - 1 != len(blanks):
+        raise ContentError("completion.blanks must have exactly one answer per blank")
+    out = parts[0]
+    for answer, tail in zip(blanks, parts[1:]):
+        out += answer + tail
+    return out
+
+
+def _passes_all(code: str, checks: list) -> bool:
+    """True only if the code parses under the sandbox policy and satisfies every check (stops at the first miss).
+
+    Tri-state: a timeout or a sandbox that never produced a verdict (after one retry) is INCONCLUSIVE and raises
+    ``ContentError`` instead of reading as "does not solve", so the answer-leak guards fail closed."""
+    _tree, syntax_error, policy_errors = _VERIFIER.syntax_and_policy(code)
+    if syntax_error or policy_errors:
+        return False
+    for check in checks:
+        res = _VERIFIER.verify(code, trusted_test_code=check["code"])
+        if res.timed_out or not res.executed:
+            res = _VERIFIER.verify(code, trusted_test_code=check["code"])     # one retry before giving up
+            if res.timed_out or not res.executed:
+                raise ContentError("sandbox_inconclusive: the sandbox did not return a verdict for the answer-leak "
+                                   "guard (timeout or crash); retry the validation")
+        if not (res.passed and res.correctness_checked):
+            return False
+    return True
+
+
+# --------------------------------------------------------------------------- answer-leak guard
+_PY_RESERVED = frozenset(keyword.kwlist) | frozenset(dir(builtins))
+_CODE_TOKEN = re.compile(
+    r"""(?P<doc>\"\"\".*?\"\"\"|\'\'\'.*?\'\'\')"""
+    r"""|(?P<str>[rRbBfFuU]{0,2}"(?:\\.|[^"\\\n])*"|[rRbBfFuU]{0,2}'(?:\\.|[^'\\\n])*')"""
+    r"""|(?P<com>\#[^\n]*)|(?P<num>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(?P<id>[^\W\d]\w*)|(?P<op>\S)""", re.S)
+_MIN_WINDOW = 12          # a reference shorter than this many tokens must equal a whole snippet instead
+
+
+def _code_tokens(text: str) -> list[tuple[str, str]]:
+    """Lexical tokens of code or of prose that embeds code: comments, docstrings and statement separators dropped."""
+    out = []
+    for m in _CODE_TOKEN.finditer(text or ""):
+        kind = m.lastgroup
+        if kind in ("doc", "com") or (kind == "op" and m.group() == ";"):
+            continue
+        out.append((kind, m.group()))
+    return out
+
+
+def _alpha(tokens: list) -> tuple:
+    """Alpha-renamed form: every identifier that is not a keyword or builtin becomes its first-appearance index
+    inside this window; numbers and strings keep their value (a different instance stays different)."""
+    names: dict[str, int] = {}
+    out = []
+    for kind, text in tokens:
+        if kind == "id" and text not in _PY_RESERVED:
+            out.append(("i", names.setdefault(text, len(names))))
+        else:
+            out.append((kind, text))
+    return tuple(out)
+
+
+def _embeds_code(blobs: list[str], reference: str) -> bool:
+    """True if any blob contains the reference solution up to identifier renaming, whitespace, comments and
+    statement separators (an alpha-renamed or reformatted copy is still the answer)."""
+    ref = _code_tokens(reference)
+    if not ref:
+        return False
+    target, size = _alpha(ref), len(ref)
+    for blob in blobs:
+        toks = _code_tokens(blob)
+        if size < _MIN_WINDOW:
+            if len(toks) == size and _alpha(toks) == target:
+                return True
+            continue
+        for start in range(0, len(toks) - size + 1):
+            if toks[start][1] == ref[0][1] or ref[0][0] == "id":
+                if _alpha(toks[start:start + size]) == target:
+                    return True
+    return False
+
+
+def _leak_targets(practice: dict | None, items: list[dict]) -> list[tuple[str, dict]]:
+    targets = []
+    if practice is not None and item_kind(practice) == "python":
+        targets.append(("the practice checks", practice))
+    targets += [(f"exam item {it['item_id']}", it) for it in items if item_kind(it) == "python"]
+    return targets
+
+
+def _top_functions(code: str) -> dict[str, int]:
+    """Top-level function name -> positional parameter count (empty when the code does not parse)."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return {}
+    return {n.name: len(n.args.posonlyargs) + len(n.args.args) for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def _alias_variants(code: str, reference: str, limit: int = 4) -> list[str]:
+    """Copies of ``code`` with the functions the target's checks call bound to its own functions of the same arity.
+
+    A renamed, loop-restructured or otherwise rewritten solution defeats the lexical copy test, and under another name
+    the hidden checks fail with a NameError: this makes the checks see it anyway (a behavioural equivalence test)."""
+    wanted, mine = _top_functions(reference), _top_functions(code)
+    missing = {n: k for n, k in wanted.items() if n not in mine}
+    if not missing or not mine:
+        return []
+    options = []
+    for name, arity in missing.items():
+        found = [m for m, k in mine.items() if k == arity and m not in wanted]
+        if not found:
+            return []
+        options.append((name, found))
+    out = []
+    for combo in itertools.islice(itertools.product(*(found for _n, found in options)), limit):
+        out.append(code + "\n" + "\n".join(f"{name} = {fn}" for (name, _f), fn in zip(options, combo)) + "\n")
+    return out
+
+
+def _behaves_like(code: str, target: dict) -> bool:
+    """True if ``code`` (renamed or restructured) satisfies the target's hidden checks once aliased to its signatures."""
+    return any(_passes_all(v, target["checks"]) for v in _alias_variants(code, target["reference_solution"]))
+
+
+def _first_leak(snippets: list[str], blobs: list[str], targets: list[tuple[str, dict]]) -> tuple[str, str] | None:
+    """(target label, "passes"|"behaves like"|"copies") of the first target whose checks any snippet satisfies (as
+    written or signature-aliased) or whose reference solution any blob embeds (renamed copies included); None if
+    clean. May raise ``sandbox_inconclusive``."""
+    unique = list(dict.fromkeys(c for c in snippets if isinstance(c, str) and c.strip()))
+    for label, target in targets:
+        for code in unique:
+            if _passes_all(code, target["checks"]):
+                return label, "passes"
+            if _behaves_like(code, target):
+                return label, "behaves like"
+        if _embeds_code(unique + [b for b in blobs if b], target["reference_solution"]):
+            return label, "copies"
+    return None
+
+
+def _walkthrough_snippets(steps: list, at: int, wrong: str | None) -> list[str]:
+    """Every state of the demonstration the learner can see: each cumulative prefix, each step's own code, and the
+    mistake's wrong code alone and spliced into the cumulative code."""
+    out = []
+    for number, step in enumerate(steps, 1):
+        out.append(_cumulative_code(steps, number))
+        out.append(step.get("code") or "")
+    if wrong:
+        out += [wrong, _cumulative_code(steps, at, replace=(at, wrong)), _cumulative_code(steps, len(steps), replace=(at, wrong))]
+    return out
+
+
+def _worked_blobs(ld: dict) -> list[str]:
+    body = ld["worked"]["code_or_steps"]
+    return [body if isinstance(body, str) else " ".join(body), ld["worked"]["explain_md"]]
+
+
+def _walkthrough_leak(wt: dict, targets: list) -> tuple[str, str] | None:
+    snippets = _walkthrough_snippets(wt["steps"], wt["mistake"]["step"], wt["mistake"].get("wrong_code"))
+    return _first_leak(snippets, [walkthrough_text(wt)], targets)
+
+
+def _ladder_snippets(ld: dict, *, include_completion: bool) -> list[str]:
+    body = ld["worked"]["code_or_steps"]
+    out = [body] if isinstance(body, str) else [*body, "\n".join(body)]
+    if include_completion:
+        comp = ld["completion"]
+        out += [comp["template"], fill_blanks(comp["template"], comp["blanks"])]
+    return out
+
+
+def _run_demo(code: str, path: str):
+    """Run walkthrough code in the sandbox (no extra output from the harness). Returns the verifier result."""
+    res = _VERIFIER.verify(code)
+    if not res.policy_valid or not res.syntax_valid:
+        raise ContentError(f"{path}: the code is not allowed to run: {', '.join(res.policy_errors or ['syntax error'])}")
+    if res.timed_out or not res.executed:
+        raise ContentError(f"{path}: the code did not finish in the sandbox")
+    return res
+
+
+def walkthrough_text(wt: dict) -> str:
+    parts = [wt["title"], wt["scenario_md"], wt["transcript_md"], wt["mistake"]["symptom"], wt["mistake"]["fix_explain"]]
+    for step in wt["steps"]:
+        parts += [step["explain_md"], step.get("code") or ""]
+        parts += [(step.get("checkpoint") or {}).get("expected_output") or ""]
+        parts += [(step.get("predict") or {}).get("prompt") or ""]
+    parts.append(wt["mistake"].get("wrong_code") or "")
+    return " ".join(p for p in parts if p)
+
+
+def ladder_text(ld: dict) -> str:
+    worked = ld["worked"]["code_or_steps"]
+    parts = [worked if isinstance(worked, str) else " ".join(worked), ld["worked"]["explain_md"],
+             ld["completion"]["template"], " ".join(ld["completion"]["blanks"]), ld["completion"]["explain_md"]]
+    return " ".join(parts)
+
+
+def _walkthrough(raw, practice: dict, items: list[dict], ground) -> dict:
+    p = "walkthrough"
+    _closed_keys(raw, _WALKTHROUGH_KEYS, p)
+    _reject_named_people(raw, p)
+    if raw.get("label") != WALKTHROUGH_LABEL_AZ:
+        raise ContentError(f"{p}.label must be exactly: {WALKTHROUGH_LABEL_AZ}")
+    language = raw.get("language")
+    if language not in WALKTHROUGH_LANGUAGES:
+        raise ContentError(f"{p}.language must be one of {WALKTHROUGH_LANGUAGES}")
+    python = language == "python"
+    steps = raw.get("steps")
+    if not isinstance(steps, list) or len(steps) < WALKTHROUGH_MIN_STEPS:
+        raise ContentError(f"{p}.steps needs at least {WALKTHROUGH_MIN_STEPS} steps")
+    out_steps, checkpoints = [], 0
+    for i, step in enumerate(steps):
+        sp = f"{p}.steps[{i}]"
+        _closed_keys(step, _STEP_KEYS, sp)
+        norm = {"explain_md": _text(step.get("explain_md"), f"{sp}.explain_md", min_len=10)}
+        code = step.get("code")
+        if code is not None:
+            if not python:
+                raise ContentError(f"{sp}.code is not allowed in a walkthrough with language 'none'")
+            norm["code"] = _text(code, f"{sp}.code")
+        if step.get("checkpoint") is not None:
+            cp = step["checkpoint"]
+            _closed_keys(cp, {"expected_output"}, f"{sp}.checkpoint")
+            if not python:
+                raise ContentError(f"{sp}.checkpoint is only for python walkthroughs")
+            norm["checkpoint"] = {"expected_output": _text(cp.get("expected_output"), f"{sp}.checkpoint.expected_output")}
+            checkpoints += 1
+        if step.get("predict") is not None:
+            pr = step["predict"]
+            _closed_keys(pr, {"prompt", "reveal"}, f"{sp}.predict")
+            norm["predict"] = {"prompt": _text(pr.get("prompt"), f"{sp}.predict.prompt", min_len=5),
+                               "reveal": _text(pr.get("reveal"), f"{sp}.predict.reveal", min_len=5)}
+        out_steps.append(norm)
+    if python and checkpoints < WALKTHROUGH_MIN_CHECKPOINTS:
+        raise ContentError(f"{p}.steps needs at least {WALKTHROUGH_MIN_CHECKPOINTS} checkpoints with expected_output")
+    mistake = raw.get("mistake")
+    _closed_keys(mistake, _MISTAKE_KEYS, f"{p}.mistake")
+    at = mistake.get("step")
+    if type(at) is not int or not 1 <= at <= len(out_steps):
+        raise ContentError(f"{p}.mistake.step must be a step number between 1 and {len(out_steps)}")
+    norm_mistake = {"step": at, "symptom": _text(mistake.get("symptom"), f"{p}.mistake.symptom", min_len=10),
+                    "fix_explain": _text(mistake.get("fix_explain"), f"{p}.mistake.fix_explain", min_len=10)}
+    out = {"title": _text(raw.get("title"), f"{p}.title"),
+           "scenario_md": _text(raw.get("scenario_md"), f"{p}.scenario_md", min_len=40),
+           "language": language, "steps": out_steps, "mistake": norm_mistake,
+           "transcript_md": _text(raw.get("transcript_md"), f"{p}.transcript_md", min_len=40),
+           "refs": _refs(raw.get("refs"), p, ground), "label": WALKTHROUGH_LABEL_AZ}
+    if python:
+        _check_walkthrough_code(out, mistake)
+        leak = _walkthrough_leak(out, _leak_targets(practice, items))
+        if leak:
+            label, how = leak
+            raise ContentError(f"{p}: the walkthrough code {how} {label} in at least one step, prefix or the deliberate "
+                               "mistake, or embeds its reference solution (answer-leak guard); "
+                               "demonstrate a different instance")
+    else:
+        if mistake.get("wrong_code") is not None:
+            raise ContentError(f"{p}.mistake.wrong_code is only for python walkthroughs")
+    shown = walkthrough_text({**out, "mistake": {**norm_mistake, "wrong_code": mistake.get("wrong_code")}})
+    for item in items:
+        _assert_separate(shown, set(), item, f"walkthrough overlaps assessment item {item['item_id']}; use a different instance")
+    return out
+
+
+def _check_walkthrough_code(out: dict, mistake: dict) -> None:
+    """Python walkthrough: every checkpoint's cumulative code prints exactly its expected output and the
+    deliberate mistake really goes wrong at its step."""
+    p, steps = "walkthrough", out["steps"]
+    last = len(steps)
+    for number, step in enumerate(steps, 1):
+        if "checkpoint" not in step and number != last:
+            continue
+        code = _cumulative_code(steps, number)
+        if not code:
+            raise ContentError(f"{p}.steps[{number - 1}] has no code up to this step")
+        _tree, syntax_error, _policy = _VERIFIER.syntax_and_policy(code)
+        if syntax_error:
+            raise ContentError(f"{p}.steps[{number - 1}]: the code up to this step is not valid Python: "
+                               f"{syntax_error.get('message')} (line {syntax_error.get('line')})")
+        res = _run_demo(code, f"{p}.steps[{number - 1}]")
+        if res.stderr.strip():
+            raise ContentError(f"{p}.steps[{number - 1}]: the code up to this step raised {res.stderr.strip().splitlines()[0][:120]}")
+        if "checkpoint" in step and _out_norm(res.stdout) != _out_norm(step["checkpoint"]["expected_output"]):
+            raise ContentError(f"{p}.steps[{number - 1}].checkpoint.expected_output does not match the sandbox output "
+                               f"({_out_norm(res.stdout)[:80]!r})")
+    at = out["mistake"]["step"]
+    wrong = mistake.get("wrong_code")
+    _code(wrong, f"{p}.mistake.wrong_code")
+    checkpoint = steps[at - 1].get("checkpoint")
+    if checkpoint is None:
+        raise ContentError(f"{p}.mistake.step must point at a step that has a checkpoint")
+    res = _run_demo(_cumulative_code(steps, at, replace=(at, wrong)), f"{p}.mistake.wrong_code")
+    if not res.stderr.strip() and _out_norm(res.stdout) == _out_norm(checkpoint["expected_output"]):
+        raise ContentError(f"{p}.mistake.wrong_code neither raises nor prints something different from the checkpoint")
+    out["mistake"]["wrong_code"] = wrong
+
+
+def _ladder(raw, practice: dict, items: list[dict]) -> dict:
+    p = "ladder"
+    _closed_keys(raw, _LADDER_KEYS, p)
+    if raw.get("independent") != "practice":
+        raise ContentError(f"{p}.independent must be 'practice' (the independent rung is the lesson practice)")
+    python = item_kind(practice) == "python"
+    worked = raw.get("worked")
+    _closed_keys(worked, {"code_or_steps", "explain_md"}, f"{p}.worked")
+    body = worked.get("code_or_steps")
+    if isinstance(body, str):
+        _text(body, f"{p}.worked.code_or_steps")
+        if python:
+            _code(body, f"{p}.worked.code_or_steps")
+    elif not (isinstance(body, list) and len(body) >= 2 and all(isinstance(s, str) and s.strip() for s in body)):
+        raise ContentError(f"{p}.worked.code_or_steps must be code text or a list of at least two steps")
+    norm_worked = {"code_or_steps": body, "explain_md": _text(worked.get("explain_md"), f"{p}.worked.explain_md", min_len=10)}
+    comp = raw.get("completion")
+    _closed_keys(comp, {"template", "blanks", "explain_md"}, f"{p}.completion")
+    template = _text(comp.get("template"), f"{p}.completion.template", min_len=10)
+    blanks = comp.get("blanks")
+    if (not isinstance(blanks, list) or not blanks or not all(isinstance(b, str) and b.strip() and LADDER_BLANK not in b
+                                                              for b in blanks)):
+        raise ContentError(f"{p}.completion.blanks must list one non-empty answer per blank")
+    if template.count(LADDER_BLANK) != len(blanks):
+        raise ContentError(f"{p}.completion.template needs exactly {len(blanks)} '{LADDER_BLANK}' blanks, one per answer")
+    norm_comp = {"template": template, "blanks": blanks,
+                 "explain_md": _text(comp.get("explain_md"), f"{p}.completion.explain_md", min_len=10)}
+    out = {"worked": norm_worked, "completion": norm_comp, "independent": "practice"}
+    if python:
+        if _norm(template) == _norm(practice["reference_solution"]):
+            raise ContentError(f"{p}.completion.template must not be the reference solution")
+        filled = fill_blanks(template, blanks)
+        if not _passes_all(filled, practice["checks"]):
+            raise ContentError(f"{p}.completion with its blanks filled does not pass the practice checks")
+        if _passes_all(fill_blanks(template, [""] * len(blanks)), practice["checks"]):
+            raise ContentError(f"{p}.completion with empty blanks already passes the practice checks; blank the essential parts")
+        practice_leak = _first_leak(_ladder_snippets(out, include_completion=False), _worked_blobs(out),
+                                    _leak_targets(practice, []))
+        if practice_leak:
+            raise ContentError(f"{p}.worked {practice_leak[1]} {practice_leak[0]} (solves the practice itself); "
+                               "show a different instance")
+    leak = _first_leak(_ladder_snippets(out, include_completion=python), [ladder_text(out)], _leak_targets(None, items))
+    if leak:
+        raise ContentError(f"{p}: a ladder rung {leak[1]} {leak[0]} (answer-leak guard)")
+    for item in items:
+        _assert_separate(ladder_text(out), set(), item, f"ladder overlaps assessment item {item['item_id']}; use a different example")
+    return out
+
+
+_FENCE = re.compile(r"```[^\n`]*\n(.*?)```", re.S)
+_CODE_LIKE = re.compile(r"\b(?:def|lambda|class)\b")
+
+
+def _teaching_snippets(lesson: dict) -> tuple[list[str], list[str]]:
+    """(code snippets, prose blobs) of every learner-visible lesson text a solution could hide in: fenced code blocks and
+    code-like strings of the explanation, why, worked example, alternative example, practice prompt and hints."""
+    we, alt, ex, pr = lesson["worked_example"], lesson["alternative_explanation"], lesson["explanation"], lesson["practice"]
+    texts = [ex["short"], ex["body"], lesson["why"]["text"], we["problem"], *we["steps"], we["result"], alt["text"],
+             alt["example"], pr["prompt_md"], *pr["hints"]]
+    snippets = [code for text in texts for code in _FENCE.findall(text)]
+    snippets += [t for t in (*we["steps"], alt["example"], *pr["hints"], "\n".join(we["steps"])) if _CODE_LIKE.search(t)]
+    return [c for c in dict.fromkeys(snippets) if _CODE_LIKE.search(c)], texts
+
+
+def _assert_text_no_leak(lesson: dict, targets: list[tuple[str, dict]], where: str) -> None:
+    """No learner-visible lesson text may carry code that solves a target: the practice itself (a hint ladder that
+    reaches the full solution) or an exam item, as written, renamed, restructured or signature-aliased."""
+    snippets, blobs = _teaching_snippets(lesson)
+    leak = _first_leak(snippets, blobs, targets) if targets else None
+    if leak:
+        raise ContentError(f"{where}: lesson text carries code that {leak[1]} {leak[0]} (answer-leak guard); "
+                           "show a different instance")
+
+
+def _assert_behaviour_separate(practice: dict, item: dict, path: str) -> None:
+    """An exam item must not be the practised task in disguise: neither side's reference solution may satisfy the other's
+    checks, as written or signature-aliased (a renamed, loop-restructured copy passes the lexical separation)."""
+    if item_kind(practice) != "python" or item_kind(item) != "python":
+        return
+    for code, target in ((item["reference_solution"], practice), (practice["reference_solution"], item)):
+        if _passes_all(code, target["checks"]) or _behaves_like(code, target):
+            raise ContentError(f"{path} behaves like the practice task (its reference solution satisfies the other's checks); "
+                               "an exam item must test a new task")
+
+
+def _assert_no_teaching_leak(lesson: dict, item: dict, path: str) -> None:
+    """An exam item must stay new relative to the lesson's walkthrough and ladder (symmetric to the
+    lesson-side guard, for items that arrive after the lesson)."""
+    wt, ld = lesson.get("walkthrough"), lesson.get("ladder")
+    if item_kind(item) != "python":
+        if wt:
+            _assert_separate(walkthrough_text(wt), set(), item, f"{path} overlaps the walkthrough; an exam item must be new")
+        if ld:
+            _assert_separate(ladder_text(ld), set(), item, f"{path} overlaps the ladder; an exam item must be new")
+        return
+    targets = _leak_targets(None, [item])
+    _assert_behaviour_separate(lesson["practice"], item, path)
+    _assert_text_no_leak(lesson, targets, path)
+    if wt:
+        _assert_separate(walkthrough_text(wt), set(), item, f"{path} overlaps the walkthrough; an exam item must be new")
+        if wt["language"] == "python" and _walkthrough_leak(wt, targets):
+            raise ContentError(f"{path}: the lesson walkthrough already solves this item or embeds its reference "
+                               "solution (answer-leak guard)")
+    if ld:
+        _assert_separate(ladder_text(ld), set(), item, f"{path} overlaps the ladder; an exam item must be new")
+        python_practice = item_kind(lesson["practice"]) == "python"
+        if _first_leak(_ladder_snippets(ld, include_completion=python_practice), [ladder_text(ld)], targets):
+            raise ContentError(f"{path}: a ladder rung already solves this item or embeds its reference solution "
+                               "(answer-leak guard)")
 
 
 def _python_item(it, node, path) -> dict:
@@ -783,18 +1303,45 @@ def public_item(item: dict) -> dict:
     return out
 
 
+def public_walkthrough(wt: dict) -> dict:
+    """The walkthrough as shown to the learner: steps, checkpoint output, predict prompts and the planned mistake.
+    It never carries the practice solution or any check (the answer-leak guard keeps it a different instance)."""
+    mistake = {k: wt["mistake"][k] for k in ("step", "symptom", "fix_explain")}
+    if wt["mistake"].get("wrong_code"):
+        mistake["wrong_code"] = wt["mistake"]["wrong_code"]
+    return {"title": wt["title"], "scenario_md": wt["scenario_md"], "language": wt["language"],
+            "steps": [dict(step) for step in wt["steps"]], "mistake": mistake, "transcript_md": wt["transcript_md"],
+            "label": wt["label"]}
+
+
+def public_ladder_rung(ld: dict, rung: str) -> dict:
+    """One ladder rung. The completion rung shows the template and blank count, never the blank answers."""
+    if rung == "worked":
+        return {"rung": "worked", "title": "Həll olunmuş nümunə", **ld["worked"]}
+    return {"rung": "completion", "title": "Boşluqları doldur", "template": ld["completion"]["template"],
+            "blank_count": len(ld["completion"]["blanks"]), "explain_md": ld["completion"]["explain_md"]}
+
+
 LESSON_PARTS = ("explanation", "why", "worked_example", "alternative_explanation")
 
 
+def lesson_ref_parts(lesson: dict) -> list[tuple[str, list]]:
+    """(part name, refs) for every part that carries source refs, including a walkthrough when present."""
+    parts = [(part, lesson[part]["refs"]) for part in LESSON_PARTS]
+    if lesson.get("walkthrough"):
+        parts.append(("walkthrough", lesson["walkthrough"]["refs"]))
+    return parts
+
+
 def cited_sources(lesson: dict) -> set:
-    return {r.get("source_id") for part in LESSON_PARTS for r in lesson[part]["refs"] if r.get("grounding") == "source"}
+    return {r.get("source_id") for _part, refs in lesson_ref_parts(lesson) for r in refs if r.get("grounding") == "source"}
 
 
 def public_lesson_summary(lesson: dict | None, gate: dict | None = None) -> dict:
     """``gate`` (from the action layer) decides readiness: capability binding + live grounding."""
     if not lesson:
         return {"status": "missing"}
-    grounding = [r.get("grounding") for part in LESSON_PARTS for r in lesson[part]["refs"]]
+    grounding = [r.get("grounding") for _part, refs in lesson_ref_parts(lesson) for r in refs]
     gate = gate or {"status": "ready"}
     out = {"status": gate["status"], "content_version": lesson["content_version"],
            "objective": lesson["objective"], "success_criteria": lesson["success_criteria"],
@@ -812,6 +1359,6 @@ def public_lesson_summary(lesson: dict | None, gate: dict | None = None) -> dict
 
 
 def write_private(path: Path, obj) -> None:
-    from .utils import write_json
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    from .utils import private_dirs, write_json
+    private_dirs(path.parent)
     write_json(path, obj)

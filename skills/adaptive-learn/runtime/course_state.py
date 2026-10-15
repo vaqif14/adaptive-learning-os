@@ -14,7 +14,7 @@ import copy
 import hashlib
 import json
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 UI_SCHEMA_VERSION = 2
 
 PHASES = (
@@ -61,6 +61,8 @@ ALLOWED: dict[str, frozenset] = {
     "begin_practice": frozenset({"teaching", "practice"}),
     "practice_check": frozenset({"practice"}),
     "practice_answer": frozenset({"practice"}),
+    "practice_reveal": frozenset({"practice"}),
+    "practice_reset": frozenset({"practice"}),
     "start_exam": frozenset({"course_generation", "teaching", "practice", "feedback", "next_mission"}),
     "save_answers": frozenset({"exam_active"}),
     "submit_exam": frozenset({"exam_active"}),
@@ -73,7 +75,8 @@ ALLOWED: dict[str, frozenset] = {
     "accountability_response": _NOT_DURING_EXAM,
 }
 REQUIRES_APPROVAL = frozenset({"install_content", "start_mission", "help", "self_explanation", "begin_practice",
-                               "practice_check", "practice_answer", "start_exam", "review_freshness", "reground"})
+                               "practice_check", "practice_answer", "practice_reveal", "practice_reset", "start_exam",
+                               "review_freshness", "reground"})
 
 # Learner-facing (Azerbaijani) refusal reasons; codes are stable for clients/tests.
 REASONS_AZ = {
@@ -105,6 +108,13 @@ REASONS_AZ = {
     "diagnostic_required": "Əvvəl məqsəd və qısa performans diagnostic-i tamamla; yoxlamasız davam yalnız sənin açıq razılığınla ilkin plan yaradır.",
     "review_required": ("Təkrar yoxlamanın vaxtı çatıb. Əvvəl yeni tapşırıqla müstəqil yoxlama aparılır; "
                         "izah və praktika bundan sonra açılacaq."),
+    "hint_ceiling_reached": ("İpucu limitinə çatdın. İstəsən, həlli aça bilərsən: bu halda bu cəhd üçün kredit verilmir "
+                             "və praktikanı yeni cəhdlə başlamalısan."),
+    "walkthrough_missing": "Bu dərsdə addım-addım nümayiş (walkthrough) yoxdur.",
+    "ladder_missing": "Bu dərsdə pilləli təlim (ladder) yoxdur.",
+    "reveal_confirmation_required": ("Həlli açmaq üçün aydın təsdiq lazımdır. Açsan, bu praktika cəhdi üçün kredit "
+                                     "verilmir və yeni cəhd başlamalısan."),
+    "practice_revealed": "Həll bu cəhddə açılıb. Davam etmək üçün yeni praktika cəhdi başla (begin_practice).",
     "rubric_required": "Açıq cavab rubrika ilə qiymətləndirilməlidir; qərar cavabdan sitatla əsaslandırılmalıdır.",
 }
 
@@ -257,6 +267,10 @@ def empty_support() -> dict:
             "conceptual_scaffold": False}
 
 
+def empty_studio() -> dict:
+    return {"active_job": None, "promoted_builds": []}
+
+
 def new_state(session_id: str, goal_text: str | None, now: str) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -307,6 +321,9 @@ def new_state(session_id: str, goal_text: str | None, now: str) -> dict:
         "review_queue": [],
         "legacy_binding_pending": False,
         "migration_log": [],
+        # v3: Course Studio promotion bookkeeping (additive; nothing here grants evidence).
+        "studio": empty_studio(),
+        "promotion_history": [],
     }
 
 
@@ -319,6 +336,9 @@ def _v0_to_v1(state: dict) -> dict:
     for key, value in state.items():
         if key in base and key not in {"schema_version", "goal"}:
             base[key] = value
+    for key in V3_ONLY_KEYS:
+        if key not in state:
+            base.pop(key, None)       # added by the v2 -> v3 step, never by an older one
     base["schema_version"] = 1
     return base
 
@@ -340,7 +360,7 @@ def _v1_to_v2(state: dict) -> dict:
                 out[key] = archived[key]
     defaults = new_state(out.get("session_id"), None, out.get("updated_at") or "")
     for key, value in defaults.items():
-        if key not in out:
+        if key not in out and key not in V3_ONLY_KEYS:       # v3 keys belong to the v2 -> v3 step (and its archive)
             out[key] = value
     out["schema_version"] = 2
     out["legacy_binding_pending"] = True
@@ -350,7 +370,32 @@ def _v1_to_v2(state: dict) -> dict:
     return out
 
 
-_MIGRATIONS = {0: _v0_to_v1, 1: _v1_to_v2}
+def _v2_to_v3(state: dict) -> dict:
+    """Add the Course Studio promotion keys. Pure and idempotent: a v3 state is returned unchanged, every v2 key
+    (known or not) is kept, and a state exported with down_v3_to_v2 gets its archived v3 data back."""
+    out = copy.deepcopy(state)
+    if out.get("schema_version") == 3:
+        return out
+    archived = out.pop("v3_archive", None)
+    if isinstance(archived, dict):
+        for key in V3_ONLY_KEYS:
+            if key in archived and key not in out:
+                out[key] = archived[key]
+    if not isinstance(out.get("studio"), dict):
+        out["studio"] = empty_studio()
+    for key, value in empty_studio().items():
+        out["studio"].setdefault(key, value)
+    if not isinstance(out.get("promotion_history"), list):
+        out["promotion_history"] = []
+    out["schema_version"] = 3
+    out["migration_log"] = list(out.get("migration_log") or []) + [
+        {"from": 2, "to": 3, "at": out.get("updated_at"),
+         "note": "v3 keys added: studio {active_job, promoted_builds[]} and promotion_history[]"}]
+    return out
+
+
+_MIGRATIONS = {0: _v0_to_v1, 1: _v1_to_v2, 2: _v2_to_v3}
+V3_ONLY_KEYS = ("studio", "promotion_history")
 V2_ONLY_KEYS = ("capabilities", "capability_history", "lesson_bindings", "item_bindings", "exposure_records",
                 "freshness_reviews", "review_queue", "legacy_binding_pending", "migration_log")
 
@@ -362,6 +407,16 @@ def down_v2_to_v1(state: dict) -> dict:
     out = copy.deepcopy(state)
     out["v2_archive"] = {k: out.pop(k) for k in V2_ONLY_KEYS if k in out}
     out["schema_version"] = 1
+    return out
+
+
+def down_v3_to_v2(state: dict) -> dict:
+    """Reverse migration for export/rollback: v3-only keys are archived under ``v3_archive``, never dropped."""
+    if state.get("schema_version") != 3:
+        raise StateVersionError("invalid_state", "down migration expects a v3 state")
+    out = copy.deepcopy(state)
+    out["v3_archive"] = {k: out.pop(k) for k in V3_ONLY_KEYS if k in out}
+    out["schema_version"] = 2
     return out
 
 
@@ -431,6 +486,12 @@ def validate(state: dict) -> list[str]:
             errors.append("duplicate_review_id")
     if not isinstance(state["capabilities"], dict):
         errors.append("bad_capabilities")
+    studio = state["studio"]
+    if (not isinstance(studio, dict) or not isinstance(studio.get("promoted_builds"), list)
+            or not (studio.get("active_job") is None or isinstance(studio.get("active_job"), str))):
+        errors.append("bad_studio_block")
+    if not isinstance(state["promotion_history"], list):
+        errors.append("bad_promotion_history")
     return errors
 
 

@@ -427,6 +427,11 @@ def _cached_text(cache_dir: Path, source_id: str, sha256: str) -> tuple[str | No
     return None, problem
 
 
+def cached_text(cache_dir: Path, source_id: str, sha256: str) -> tuple[str | None, str | None]:
+    """Public read of the hash-verified cached source text: (text, problem)."""
+    return _cached_text(cache_dir, source_id, sha256)
+
+
 def find_quote(cache_dir: Path, manifest: dict, source_id: str, quote: str) -> dict:
     """Is ``quote`` really present in the validated source text? (grounding check)"""
     entry = next((r for r in (manifest or {}).get("resources", []) if r.get("source_id") == source_id), None)

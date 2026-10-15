@@ -113,6 +113,53 @@ data returns `insufficient_data`, never a synthetic calibration claim. BKT
 defaults and the review scheduler remain engineering heuristics; measured
 learning gains and semantic-grader accuracy need a separate real-learner study.
 
+## Course Studio operations
+
+Design: [course studio](course-studio.md). Replace `<sid>` with the course session id.
+
+```sh
+alearn --workspace . studio doctor --session <sid>          # runners, worker, permissions, event chain, ledger, sandbox
+alearn --workspace . studio status --session <sid>          # job, drift, per-unit progress, worker heartbeat
+alearn --workspace . studio events --session <sid>          # hash-chained events + verification
+alearn --workspace . studio notifications --session <sid> --since 0
+alearn --workspace . rules-check --session <sid> --scope quick
+```
+
+- **Where things live.** `<session>/studio/` holds `jobs/`, `orders/`, `inbox/`, `staging/`,
+  `receipts/`, `handover/`, `scratch/`, `archive/`, `events.jsonl`, `notifications.jsonl` and
+  `worker/` (`worker.lock`, `heartbeat.json`, `worker.log`, `runner.json`). Directories 0700, files
+  0600. Do not edit them by hand; `studio doctor` reports permission, event-chain and ledger problems.
+- **Worker.** `studio start --session <sid> --detach` spawns `alearn studio worker` in its own
+  session behind a flock singleton. `studio status` shows `worker {alive, pid, beat_at, state}`:
+  `alive` means the lock is held and the heartbeat is at most 120 s old; a held lock with an older
+  heartbeat reports `stale`. Stop it with SIGTERM (the runner group is killed, its lease released,
+  the worker exits cleanly). It exits on done, `needs_learner`, `blocked`, `cancelled` or after the
+  idle limit (default 2 h), and backs off from 30 s to 300 s while idle. Without an enabled runner it
+  never issues orders (it plans, runs the gate, submits inbox results and otherwise waits for the
+  inline host). A start that finds nothing to do returns `exited_early` with exit code 0, which is
+  not a failure.
+- **Worker log and never-delete rotation.** `studio/worker/worker.log` is rotated at 5 MB by
+  renaming it into `studio/archive/worker-logs/`. Scratch rules-check copies keep the five newest
+  under `studio/scratch/`; older ones are renamed into `studio/archive/`. A torn final event line is
+  moved to `studio/archive/events-torn-N.jsonl`. Nothing is removed; reclaim disk space by moving
+  archive files yourself, as a separate human-run step. Runner scratch directories
+  (`alearn-run-*`, outside the workspace) are also never removed by the studio.
+- **Schedule instead of a worker.** `studio tick --session <sid>` performs one iteration (skipped while a worker
+  loop holds the lock); `studio schedule-print --session <sid> --every-minutes 15` prints a launchd plist
+  and, for cadences cron expresses evenly, a crontab line. Nothing is installed.
+- **Owner server.** `ALEARN_OWNER_TOKEN="$(openssl rand -base64 36)" alearn --workspace . studio serve --session <sid>`
+  listens on `127.0.0.1:8778` by default. It is a separate process from `course serve` and refuses to start
+  without the token, with a token under 24 characters, with the learner token's value, or on a wildcard host.
+  The token is an environment-only bearer secret with no rotation or expiry: restart the server with a new
+  value to change it. The detached worker it starts inherits the environment minus the owner and API tokens.
+  The browser gets no gate run: `GET /api/studio/handover` is read-only and reports a stale receipt;
+  refresh it with `studio handover` or `rules-check` in a terminal.
+- **Backup.** `backup-session` skips `studio/scratch` (disposable copies). After a
+  `restore-session`, run `rules-check` again rather than trusting a copied receipt: a receipt is bound to the build digest and the ledger head.
+- **Crash and drift.** A job whose roadmap, capability, source hash or validator version changed becomes
+  `superseded`; run `studio rebase`. An order whose runner binary hash changed is not executed until
+  `studio runners configure` is run again.
+
 ## Release verification
 
 The test suite includes independent process writers, process death after journal

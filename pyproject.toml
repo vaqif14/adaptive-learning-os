@@ -19,6 +19,7 @@ packages = [
     "alearn_skill",
     "alearn_skill.runtime",
     "alearn_skill.runtime.verifiers",
+    "alearn_skill.runtime.rules_probes",
     "alearn_skill.runtime.adapters",
     "alearn_skill.scripts",
 ]

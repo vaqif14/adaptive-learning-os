@@ -194,7 +194,7 @@ class CapabilityImpactTests(CourseCase):
 
 class MigrationTests(CourseCase):
     def _journal_as_v1(self, extra=None):
-        v1 = cs.down_v2_to_v1(read_json(self.d / "course-state.json"))
+        v1 = cs.down_v2_to_v1(cs.down_v3_to_v2(read_json(self.d / "course-state.json")))
         v1.pop("v2_archive")
         v1.update(extra or {})
         commit_state(self.d, self.sk.ledger(self.sid), {"event_type": "test_simulated_v1_state"},
@@ -208,7 +208,7 @@ class MigrationTests(CourseCase):
         v1 = self._journal_as_v1({"custom_extension": {"keep": True}})
         st = self.k.state(self.sid)
         raw = read_json(self.d / "course-state.json")
-        self.assertEqual(raw["schema_version"], 2)
+        self.assertEqual(raw["schema_version"], 3)
         self.assertEqual(raw["custom_extension"], {"keep": True})
         self.assertEqual(read_json(self.d / "course-state.pre-v2.json"), v1)
         self.assertEqual(raw["capabilities"]["vec-sim"]["basis"], "legacy_migration")
@@ -243,7 +243,7 @@ class MigrationTests(CourseCase):
     def test_down_migration_archives_and_cli_export_never_touches_live_state(self):
         import alearn
         self.approve()
-        down = cs.down_v2_to_v1(read_json(self.d / "course-state.json"))
+        down = cs.down_v2_to_v1(cs.down_v3_to_v2(read_json(self.d / "course-state.json")))
         self.assertEqual(down["schema_version"], 1)
         self.assertEqual(set(down["v2_archive"]), set(cs.V2_ONLY_KEYS))
         self.assertFalse(set(cs.V2_ONLY_KEYS) & set(down))
@@ -253,7 +253,7 @@ class MigrationTests(CourseCase):
         common = ["--workspace", str(self.ws), "course", "schema-down", "--session", self.sid, "--output", str(out)]
         self.assertEqual(alearn.main(common), 0)
         self.assertEqual(read_json(out)["schema_version"], 1)
-        self.assertEqual(read_json(self.d / "course-state.json")["schema_version"], 2)
+        self.assertEqual(read_json(self.d / "course-state.json")["schema_version"], 3)
         self.assertEqual(alearn.main(common), 1)                                # never overwrites
 
 

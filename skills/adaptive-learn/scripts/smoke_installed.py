@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def main():
@@ -190,12 +191,66 @@ finally:
         assert not (destination / ".learning" / "sessions" / sid / "workspace").exists()
         restored_diagnostic = run("--workspace", str(destination), "course", "diagnostic-next", "--session", sid)
         assert restored_diagnostic == diagnostic
+        # --- Course Studio smoke: installed entry point, fresh session, no runner, no model call ---
+        studio_started = run("start", "--topic", "Proofs", "--goal", "Learn to prove claims",
+                             "--stated-background", "No prior proof practice", "--without-notebooklm")
+        ssid = studio_started.get("session_id") or studio_started["session"]["session_id"]
+        assert ssid != sid
+        run("course", "init", "--session", ssid)
+        studio_dir = root / ".learning" / "sessions" / ssid
+
+        def snapshot():
+            return {str(q.relative_to(root)): q.stat().st_mtime_ns for q in root.rglob("*") if q.is_file()}
+
+        def run_raw(*args, extra_env=None, timeout=30):
+            started_at = time.monotonic()
+            result = subprocess.run([str(entrypoint), *args], cwd=root, env={**env, **(extra_env or {})}, text=True,
+                                    capture_output=True, timeout=timeout, check=False)
+            checks.append({"command": list(args), "exit_code": result.returncode})
+            return result, time.monotonic() - started_at
+
+        # A fresh session lacks a roadmap, diagnostic, goal and sources: the studio reports exactly that and
+        # never fabricates learner work, a roadmap, or content.
+        init = run("studio", "init", "--session", ssid)
+        assert init["status"] == "needs_learner", init["status"]
+        assert set(init["needs_learner"]["blockers"]) == {
+            "roadmap_not_proposed", "diagnostic_required", "goal_clarification_required", "sources_required"}, init["needs_learner"]
+        assert init["progress"]["units_total"] == 0 and init["units"] == {} and init["current_order"] is None
+        status = run("studio", "status", "--session", ssid)
+        assert status["status"] == "needs_learner" and status["job_id"] == init["job_id"]
+        assert set(status["needs_learner"]["blockers"]) == set(init["needs_learner"]["blockers"])
+        assert not (studio_dir / "workspace").exists() and not list(studio_dir.rglob("*.html")), \
+            "studio init must not create a course"
+        before_print = snapshot()
+        printed, _ = run_raw("studio", "schedule-print", "--session", ssid)
+        assert printed.returncode == 0 and "launchd" in printed.stdout and "crontab" in printed.stdout.lower()
+        assert "studio" in printed.stdout and "tick" in printed.stdout
+        assert snapshot() == before_print, "schedule-print must print only: it may not install or write anything"
+        doctor = run("studio", "doctor", "--session", ssid)
+        assert doctor["ok"] is True and doctor["checks"]["permissions"]["ok"] is True
+        assert doctor["checks"]["events"]["ok"] is True and doctor["checks"]["worker"]["alive"] is False
+        assert all(not r["configured"] for r in doctor["checks"]["runners"]["runners"].values())
+        runners = run("studio", "runners", "show", "--session", ssid)
+        assert set(runners["runners"]) == {"claude", "codex"}
+        assert all(not r["configured"] for r in runners["runners"].values()), "no runner may be configured by default"
+        gate = run("rules-check", "--session", ssid, "--scope", "quick")
+        assert gate["scope"] == "quick" and gate["exit_code"] == 0 and gate["status"] == "pass"
+        assert set(gate["rules"]) == {f"R{n}" for n in range(1, 11)} and not gate["failing_rules"]
+        assert not gate["errored_rules"] and gate["partial"] is False
+        # The owner server must refuse to start without ALEARN_OWNER_TOKEN (no listening socket, fast non-zero exit).
+        refused, elapsed = run_raw("studio", "serve", "--session", ssid, timeout=20)
+        assert refused.returncode != 0 and "ALEARN_OWNER_TOKEN" in refused.stdout + refused.stderr, refused
+        assert elapsed < 15, f"studio serve without a token must fail fast, took {elapsed:.1f}s"
+        studio_report = {"status": "passed", "job_status": init["status"], "blockers": sorted(init["needs_learner"]["blockers"]),
+                         "doctor_ok": doctor["ok"], "runners_configured": [],
+                         "rules_check": {"scope": gate["scope"], "status": gate["status"], "exit_code": gate["exit_code"]},
+                         "serve_without_token": {"exit_code": refused.returncode, "seconds": round(elapsed, 2)}}
         report = {"status": "passed", "package": "adaptive-learning-os-runtime",
                   "version": importlib.metadata.version("adaptive-learning-os-runtime"),
                   "python": sys.version.split()[0], "package_location": location,
                   "entrypoint": str(entrypoint), "assets": assets,
                   "working_directory_outside_checkout": str(root), "checks": checks,
-                  "http_smoke": server_report,
+                  "http_smoke": server_report, "studio_smoke": studio_report,
                   "state_only_start": True, "unapproved_course_serve_refused": True,
                   "limits": ["synthetic fixture; no NotebookLM request or learning-efficacy measurement",
                              "recovery refusal checked; agreed recovery lifecycle covered by runtime suite"]}

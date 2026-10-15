@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import py_compile
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -28,6 +29,18 @@ required = [
     SKILL / "runtime" / "course_journey.py",
     SKILL / "runtime" / "course_recovery.py",
     SKILL / "scripts" / "smoke_installed.py",
+    SKILL / "references" / "course-studio.md",
+    SKILL / "runtime" / "rules_check.py",
+    SKILL / "runtime" / "os_sandbox.py",
+    SKILL / "runtime" / "rules_loopback.py",
+    SKILL / "runtime" / "rules_probes" / "__init__.py",
+    SKILL / "runtime" / "rules_probes" / "base.py",
+    SKILL / "runtime" / "rules_probes" / "journey.py",
+    *[SKILL / "runtime" / "rules_probes" / f"r{n:02d}.py" for n in range(1, 11)],
+    SKILL / "runtime" / "studio.py",
+    *[SKILL / "runtime" / f"studio_{m}.py" for m in (
+        "agents", "handover", "jobs", "orders", "plan", "receipt", "remediate", "review",
+        "staging", "store", "views", "worker")],
     SKILL / "runtime" / "learning_workspace.py",
     SKILL / "templates" / "react" / "src" / "App.jsx",
     SKILL / "templates" / "react" / "package.json",
@@ -104,6 +117,33 @@ for p in [ROOT / "plugin.json", ROOT / ".codex-plugin" / "plugin.json"]:
 for d in json_dirs:
     for p in d.glob("*.json"):
         json.loads(p.read_text(encoding="utf-8"))
+
+# Course Studio packaging: every runtime subpackage must be declared in pyproject (an undeclared
+# subpackage is silently missing from a wheel), and the committed UI build must be self-consistent
+# (index.html references only assets that exist; no asset is orphaned from a stale build).
+_pp = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+for _init in sorted((SKILL / "runtime").rglob("__init__.py")):
+    _rel = _init.parent.relative_to(SKILL)
+    if "node_modules" in _rel.parts or "__pycache__" in _rel.parts:
+        continue
+    _pkg = "alearn_skill." + ".".join(_rel.parts)
+    if f'"{_pkg}"' not in _pp:
+        print(f"pyproject.toml packages is missing {_pkg}: it would not ship in the wheel")
+        sys.exit(1)
+_dist = SKILL / "templates" / "react" / "dist"
+_index = (_dist / "index.html").read_text(encoding="utf-8")
+_ref = set(re.findall(r'(?:src|href)="/(assets/[^"]+)"', _index))
+if not _ref:
+    print("dist/index.html references no compiled assets")
+    sys.exit(1)
+_gone = sorted(a for a in _ref if not (_dist / a).is_file())
+if _gone:
+    print(f"dist/index.html references missing assets: {_gone}")
+    sys.exit(1)
+_chunks = sorted(p.name for p in (_dist / "assets").glob("Owner-*.js")) + sorted(p.name for p in (_dist / "assets").glob("App-*.js"))
+if len(_chunks) < 2:
+    print("dist/assets lacks the owner/learner chunks (Owner-*.js, App-*.js): rebuild the UI")
+    sys.exit(1)
 
 # Compile every Python file so packaging errors are caught before release.
 for p in list(SKILL.rglob("*.py")) + list((ROOT / "tests").rglob("*.py")):

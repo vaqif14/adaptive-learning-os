@@ -14,7 +14,7 @@ STATE_FILES = {"cards.json", "learning-contract.json", "source-policy.json",
                "anchor-probe.json", "session.json", "notebooklm.json",
                "course-state.json", "source-manifest.json",
                # pre-migration snapshot written once in the migration's own transaction
-               "course-state.pre-v2.json"}
+               "course-state.pre-v2.json", "course-state.pre-v3.json"}
 
 
 def workspace_metadata(root):

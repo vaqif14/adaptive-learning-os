@@ -228,6 +228,27 @@ resource finder, role-play, realistic task, practice app, card writer); they are
 available to the agent but not rendered as navigation. Role names appear only in
 the collapsible "Bu addım haqqında" note — there is no role selector.
 
+## 7a. Practice-first parts for the learner (walkthrough, ladder, reveal, reset)
+
+Lessons produced by the Course Studio (policy `studio-targets-v2`) carry three practice-first
+parts; legacy lessons may omit them. Design and validators: [course studio](course-studio.md) section 7.
+
+- **Walkthrough** (`course help --kind walkthrough`, app stepper): a stepped code-along on a
+  different instance than the practice and exams, each step's output checked in the sandbox,
+  one deliberate mistake with its fix, predict-then-reveal prompts (the learner's prediction
+  is never stored or sent). It is labelled as an agent-authored, source-grounded demonstration,
+  never attributed to a real expert. Watching earns no evidence.
+- **Ladder** (`course help --kind ladder --rung worked|completion`): worked example, completion
+  with `___` blanks, then the independent practice. Opening a rung is a help event; all ladder work
+  is supported completion, never mastery.
+- **Hint ceiling:** after `hint_ceiling` hints only the explicit reveal remains.
+- **Reveal** (`course practice-reveal --node <id> --confirm`, `POST /api/course/practice/reveal`):
+  shows the reference solution, records a support event, gives zero practice credit for that
+  attempt and marks the node's later evidence as assisted. `course practice-begin` starts a new
+  attempt (same task, a new attempt id, hint counter reset; no credit); check and answer are refused for the revealed attempt.
+- **Reset** (`course practice-reset --node <id>`, `POST /api/course/practice/reset`): archives the
+  learner's file under `workspace/modules/<node>/archive/` and restores the starter; nothing is deleted.
+
 ## 8. Next mission
 
 Computed at finalization from the result: all checks passed ⇒ next open node and a
@@ -343,12 +364,20 @@ alearn --workspace . course author-lesson --session <sid> --node <id> --file les
 alearn --workspace . course turn --session <sid>               # every agent turn
 # non-code practice/exams, rubric judgments, reviews, grounding, freshness:
 alearn --workspace . course practice-answer --session <sid> --node <id> --file answers.json
+# practice-first teaching (course-studio.md section 7): watching creates no evidence
+alearn --workspace . course help --session <sid> --node <id> --kind walkthrough
+alearn --workspace . course help --session <sid> --node <id> --kind ladder --rung worked|completion
+alearn --workspace . course practice-reset --session <sid> --node <id>              # archives the file, restores the starter
+alearn --workspace . course practice-reveal --session <sid> --node <id> --confirm   # solution shown, zero credit, new attempt id
 alearn --workspace . course exam-answers --session <sid> --attempt <att> --file answers.json
 alearn --workspace . course exam-rubric --session <sid> --attempt <att> --file judgment.json
 alearn --workspace . course review-start --session <sid> --node <id>
 alearn --workspace . course reground --session <sid> --node <id>
 alearn --workspace . course item-freshness --session <sid> --node <id> --item <item> --decision distinct --rationale "…"
-alearn --workspace . course schema-down --session <sid> --output state-v1.json   # export only
+alearn --workspace . course schema-down --session <sid> --output state-v1.json   # export only (add --target-version 2 for v2)
+# Course Studio promotion and the 10-rule gate (course-studio.md sections 8-9, 12):
+alearn --workspace . rules-check --session <sid> --job <job> --scope quick|full      # exit 0 pass, 2 rule failed, 3 probe error/broken suite
+alearn --workspace . course promote-staged --session <sid> --job <job>               # owner-accepted build -> live course, all conditions re-checked
 ```
 
 Resuming = start the server again (or run `course turn`); the persisted phase,
@@ -365,8 +394,11 @@ supersedes precisely; an out-of-band change of unknown content → `legacy_unver
 lesson source hashes, item fingerprints and exposure records from the vault, unknown
 exposures recorded as unverifiable; a scheduled review from each passed node's last
 pass). Nothing is deleted and passes are kept. A crash between the two steps resumes
-at the second on the next open. `course schema-down` exports a v1 view (v2 data
-archived under `v2_archive`) without touching the live state; rolling back means
+at the second on the next open. Schema 3 (additive: `studio {active_job,
+promoted_builds[]}`, `promotion_history[]`) is added by a pure, idempotent v2 -> v3 step
+that journals the exact previous state once as `course-state.pre-v3.json`. `course
+schema-down` exports a v1 view (v2 data archived under `v2_archive`, v3 data under
+`v3_archive`; `--target-version 2` stops at v2) without touching the live state; rolling back means
 restoring that export into an older runtime. After upgrading, run `course
 regenerate-ui` + `course build-ui`: the bridge refuses UI builds with an older
 `ui_schema` (v2 required). A roadmap revision keeps the built app servable.

@@ -34,7 +34,7 @@ def nodes_of(st):
 
 
 def journal_as_v1(case, extra=None, keep_archive=False):
-    v1 = cs.down_v2_to_v1(read_json(case.d / "course-state.json"))
+    v1 = cs.down_v2_to_v1(cs.down_v3_to_v2(read_json(case.d / "course-state.json")))
     if not keep_archive:
         v1.pop("v2_archive")
     v1.update(extra or {})

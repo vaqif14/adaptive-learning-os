@@ -52,11 +52,33 @@ class ServerConfig:
                  ui_file: Path | None = None, prefer_backend: str | None = None,
                  max_concurrent_runs: int = 4, workspace: Path | None = None,
                  ui_dir: Path | None = None, allow_unsandboxed_exec: bool = False,
-                 course_session: str | None = None):
+                 course_session: str | None = None, owner_session: str | None = None,
+                 owner_token: str | None = None):
         self.host = host
         self.port = port
         # Course mode binds the local app to exactly one learner session.
         self.course_session = course_session
+        # Owner mode (Course Studio): a SEPARATE process and credential from the learner server. It serves only the
+        # built UI and /api/studio*, requires its own token, and never allows anonymous access.
+        self.owner_session = owner_session
+        if owner_session:
+            if course_session:
+                raise ValueError("owner mode and learner course mode are separate servers: pass one of them")
+            if allow_anon:
+                raise ValueError("the owner server never allows anonymous access")
+            if host in {"0.0.0.0", "::", ""}:
+                raise ValueError("the owner server binds one explicit address; a wildcard bind is refused")
+            learner_token = token if token is not None else os.environ.get("ADAPTIVE_API_TOKEN")
+            if not owner_token:
+                raise ValueError("the owner server requires an owner token (ALEARN_OWNER_TOKEN)")
+            if owner_token != owner_token.strip():
+                # _authed strips the presented value, so a padded secret could never authenticate: refuse it at start.
+                raise ValueError("ALEARN_OWNER_TOKEN has leading or trailing whitespace: remove it (the token is compared trimmed)")
+            if len(owner_token) < 24:
+                raise ValueError("ALEARN_OWNER_TOKEN too weak: use >=24 random chars, e.g. `openssl rand -base64 36`")
+            if learner_token and hmac.compare_digest(owner_token.encode("utf-8"), learner_token.encode("utf-8")):
+                raise ValueError("the owner token must differ from the learner/API token (ADAPTIVE_API_TOKEN)")
+            token = owner_token
         self.token = token if token is not None else os.environ.get("ADAPTIVE_API_TOKEN")
         self.allow_anon = allow_anon
         self.ui_file = ui_file
@@ -99,6 +121,8 @@ def _handler(cfg: ServerConfig):
             self.send_header("Content-Length", str(len(body)))
             for h, v in _SECURITY_HEADERS:
                 self.send_header(h, v)
+            if cfg.owner_session:
+                self.send_header("Cache-Control", "no-store")
             self.end_headers()
             try:
                 self.wfile.write(body)
@@ -137,14 +161,14 @@ def _handler(cfg: ServerConfig):
             self.send_header("Content-Length", str(len(body)))
             for h, v in _SECURITY_HEADERS:
                 self.send_header(h, v)
-            if cfg.course_session:
+            if cfg.course_session or cfg.owner_session:
                 self.send_header("Content-Security-Policy", _COURSE_CSP)
                 self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
             return True
 
-        _LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
+        _LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"} | ({cfg.host.strip("[]").lower()} if cfg.owner_session else set())
 
         def _host_is_local(self) -> bool:
             # DNS-rebinding defense: a browser pointed at a rebind domain still sends
@@ -297,10 +321,13 @@ def _handler(cfg: ServerConfig):
                                                                  statement=data.get("statement"),
                                                                  commitments=data.get("commitments"), **kw),
                 "/api/course/mission/start": lambda: k.start_mission(sid, data.get("node"), **kw),
-                "/api/course/help": lambda: k.help(sid, data.get("node"), data.get("kind"), **kw),
+                "/api/course/help": lambda: k.help(sid, data.get("node"), data.get("kind"), rung=data.get("rung"), **kw),
                 "/api/course/self-explanation": lambda: k.self_explanation(sid, data.get("node"), data.get("text"), **kw),
                 "/api/course/practice/begin": lambda: k.begin_practice(sid, data.get("node"), **kw),
                 "/api/course/practice/check": lambda: k.practice_check(sid, data.get("node"), **kw),
+                "/api/course/practice/reveal": lambda: k.practice_reveal(sid, data.get("node"),
+                                                                         confirm=data.get("confirm") is True, **kw),
+                "/api/course/practice/reset": lambda: k.practice_reset(sid, data.get("node"), **kw),
                 "/api/course/practice/answer": lambda: k.practice_answer(sid, data.get("node"), data.get("answers"), **kw),
                 "/api/course/exam/answers": lambda: k.save_answers(sid, data.get("attempt_id"), data.get("answers"), **kw),
                 "/api/course/review/start": lambda: k.start_review(sid, data.get("node"), **kw),
@@ -321,11 +348,115 @@ def _handler(cfg: ServerConfig):
             except CourseStateError as exc:
                 return self._course_error(exc)
 
+        # --- owner bridge (Course Studio; owner mode only) --------------
+        _STUDIO_STATUS = {"studio_no_job": 404, "studio_job_not_found": 404, "studio_unknown_node": 404,
+                          "studio_statement_required": 400, "studio_statement_sensitive": 400, "studio_note_required": 400, "studio_channel_invalid": 400,
+                          "studio_preview_leak": 500, "studio_preview_malformed": 500, "exam_active": 423}
+        _STUDIO_POST_FIELDS = {"start": {"runner"}, "pause": set(), "resume": set(), "cancel": set(),
+                               "accept": {"digest", "statement"}, "reject": {"node", "note"}}
+
+        def _studio(self):
+            from .studio import StudioKernel
+            return StudioKernel(cfg.workspace)
+
+        def _studio_error(self, exc):
+            code = getattr(exc, "code", "invalid_request")
+            body = exc.to_dict() if hasattr(exc, "to_dict") else {"error": code}
+            return self._send(self._STUDIO_STATUS.get(code, 409), body)
+
+        def _owner_request_ok(self) -> bool:
+            # The token is a header (not a cookie), but the owner surface still refuses a rebound Host or a
+            # cross-origin page before looking at credentials: same rules as the learner server.
+            if self._host_is_local() and self._origin_is_local():
+                return True
+            self._send(403, {"error": "forbidden_origin"})
+            return False
+
+        def _studio_get(self, path):
+            from . import studio_views as views
+            from .course_state import CourseStateError
+            sid, q = cfg.owner_session, self._query()
+            try:
+                k = self._studio()
+                if path == "/api/studio":
+                    return self._send(200, views.status_view(k, sid))
+                if path == "/api/studio/events":
+                    limit = q.get("limit")
+                    if limit is not None and not limit.isdigit():
+                        return self._send(400, {"error": "invalid_request", "detail": "limit must be a number"})
+                    return self._send(200, views.events_view(k, sid, int(limit) if limit else None))
+                if path == "/api/studio/handover":
+                    return self._send(200, views.handover_view(k, sid))
+                if path == "/api/studio/node":
+                    return self._send(200, views.node_preview(k, sid, q.get("node", "")))
+            except CourseStateError as exc:
+                return self._studio_error(exc)
+            except (FileNotFoundError, OSError) as e:
+                return self._send(404, {"error": type(e).__name__})
+            except (ValueError, TypeError, KeyError, AttributeError) as e:
+                return self._send(400, {"error": "invalid_request", "detail": str(e)[:200]})
+            return self._send(404, {"error": "not_found"})
+
+        def _studio_post(self, path, data):
+            from .course_state import CourseStateError
+            from .studio_worker import start_detached
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                return self._send(415, {"error": "json_content_type_required"})
+            action = path.rsplit("/", 1)[-1]
+            allowed = self._STUDIO_POST_FIELDS.get(action)
+            if allowed is None or path != f"/api/studio/{action}":
+                return self._send(404, {"error": "not_found"})
+            # No route accepts authored content: only these fields, only short strings.
+            extra = sorted(set(data) - allowed - {"idempotency_key"})
+            if extra or any(not isinstance(data.get(f), (str, type(None))) for f in allowed | {"idempotency_key"}):
+                return self._send(400, {"error": "invalid_request", "detail": "unexpected or non-string field",
+                                        "fields": extra[:5]})
+            key = data.get("idempotency_key") or None
+            sid = cfg.owner_session
+            try:
+                k = self._studio()
+                if action == "accept":
+                    # channel owner_ui; promotion is left to `studio promote` / the learner's next turn (own process):
+                    # the post-promotion gate swaps process-wide state and must not run inside a threaded server.
+                    return self._send(200, k.accept(sid, None, data.get("digest"), data.get("statement"), idempotency_key=key,
+                                                    channel="owner_ui", promote=False))
+                if action == "reject":
+                    return self._send(200, k.reject(sid, None, data.get("node"), data.get("note"), idempotency_key=key,
+                                                    channel="owner_ui"))
+                if action == "start":
+                    runner = data.get("runner") or None
+                    if runner not in (None, "claude", "codex"):
+                        return self._send(400, {"error": "invalid_request", "detail": "runner must be claude or codex"})
+                    if k.status(sid).get("status") == "no_job":
+                        return self._send(404, {"error": "studio_no_job", "message": "no studio job exists for this session"})
+                    script = Path(__file__).resolve().parents[1] / "scripts" / "alearn.py"
+                    child_env = {n: v for n, v in os.environ.items() if n not in {"ALEARN_OWNER_TOKEN", "ADAPTIVE_API_TOKEN"}}
+                    out = start_detached(cfg.workspace, sid, script, k=k, runner=runner, env=child_env)
+                    return self._send(200, {key_: out[key_] for key_ in ("started", "result", "pid", "exit_code") if key_ in out})
+                return self._send(200, getattr(k, action)(sid, None, idempotency_key=key))
+            except CourseStateError as exc:
+                return self._studio_error(exc)
+
         # --- routes ------------------------------------------------------
         def do_GET(self):
             path = urlparse(self.path).path
             if path == "/health":
-                return self._send(200, {"ok": True, "version": VERSION})
+                mode = "owner" if cfg.owner_session else "learner" if cfg.course_session else None
+                return self._send(200, {"ok": True, "version": VERSION, **({"mode": mode} if mode else {})})
+            if path == "/api/studio" or path.startswith("/api/studio/"):
+                # Only the owner server mounts the studio; every other server answers 404 before any credential check.
+                if not cfg.owner_session:
+                    return self._send(404, {"error": "not_found"})
+                if not self._owner_request_ok():
+                    return None
+                if not self._authed():
+                    return self._send(401, {"error": "unauthorized"})
+                return self._studio_get(path)
+            if cfg.owner_session:
+                # owner mode: the built UI and /health only; no learner, run or inspect route exists here
+                if self._try_static(path):
+                    return None
+                return self._send(404, {"error": "not_found"})
             if cfg.course_session and path == "/roadmap.html":
                 if not self._authed():
                     return self._send(401, {"error": "unauthorized"})
@@ -380,6 +511,23 @@ def _handler(cfg: ServerConfig):
             return self._send(404, {"error": "not_found"})
 
         def do_POST(self):
+            path = urlparse(self.path).path
+            if path == "/api/studio" or path.startswith("/api/studio/"):
+                if not cfg.owner_session:
+                    return self._send(404, {"error": "not_found"})
+                if not self._owner_request_ok():
+                    return None
+                if not self._authed():
+                    return self._send(401, {"error": "unauthorized"})
+                data, err = self._body()
+                if err:
+                    return self._send(*err)
+                try:
+                    return self._studio_post(path, data)
+                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                    return self._send(400, {"error": "invalid_request", "detail": str(exc)[:200]})
+            if cfg.owner_session:
+                return self._send(404, {"error": "not_found"})
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
             data, err = self._body()
@@ -387,7 +535,6 @@ def _handler(cfg: ServerConfig):
                 return self._send(*err)
             # The concurrency cap protects code execution; light course bookkeeping
             # (resume, activity heartbeats, navigation actions) must not be refused by it.
-            path = urlparse(self.path).path
             heavy = not path.startswith("/api/course/") or path in _COURSE_EXEC_PATHS
             if heavy and not run_slots.acquire(blocking=False):
                 return self._send(429, {"error": "too_many_concurrent_runs",

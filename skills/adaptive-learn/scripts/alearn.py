@@ -1068,10 +1068,23 @@ def cmd_course(args):
         return printj(k.install_items(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
     if sub == "author-lesson":
         return printj(k.install_lesson(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
+    if sub in ("validate-lesson", "validate-items"):
+        # Dry run: same validators as author-*, nothing is installed, written or journaled.
+        payload = _jsonfile(args, args.file)
+        if sub == "validate-lesson":
+            staged = _jsonfile(args, args.staged_items) if args.staged_items else None
+            result = k.validate_lesson_dry(sid, args.node, payload, staged_items=staged)
+        else:
+            staged = _jsonfile(args, args.staged_lesson) if args.staged_lesson else None
+            result = k.validate_items_dry(sid, args.node, payload, staged_lesson=staged)
+        printj(result)
+        if not result["valid"]:
+            raise SystemExit(1)
+        return
     if sub == "start":
         return printj(k.start_mission(sid, args.node, **_kw(args)))
     if sub == "help":
-        return printj(k.help(sid, args.node, args.kind, **_kw(args)))
+        return printj(k.help(sid, args.node, args.kind, rung=args.rung, **_kw(args)))
     if sub == "self-explain":
         text = safe_input_path(workspace(args), args.file).read_text(encoding="utf-8")
         return printj(k.self_explanation(sid, args.node, text, **_kw(args)))
@@ -1079,6 +1092,10 @@ def cmd_course(args):
         return printj(k.begin_practice(sid, args.node, **_kw(args)))
     if sub == "practice-check":
         return printj(k.practice_check(sid, args.node, **_kw(args)))
+    if sub == "practice-reveal":
+        return printj(k.practice_reveal(sid, args.node, confirm=args.confirm, **_kw(args)))
+    if sub == "practice-reset":
+        return printj(k.practice_reset(sid, args.node, **_kw(args)))
     if sub == "practice-answer":
         return printj(k.practice_answer(sid, args.node, _jsonfile(args, args.file), **_kw(args)))
     if sub == "exam-answers":
@@ -1096,9 +1113,13 @@ def cmd_course(args):
         target = safe_input_path(workspace(args), args.output, must_exist=False)
         k.state(sid)   # migrate + reconcile under the session lock first
         state = read_json(kernel(args).dir(sid) / "course-state.json")
-        _write_export(target, cstate.down_v2_to_v1(state))
-        return printj({"written": str(target), "schema_version": 1,
-                       "note": "export only; the live v2 state is unchanged and v2-only data is archived under v2_archive"})
+        down = cstate.down_v3_to_v2(state) if state.get("schema_version") == 3 else state
+        if args.target_version == 1:
+            down = cstate.down_v2_to_v1(down)
+        _write_export(target, down)
+        return printj({"written": str(target), "schema_version": args.target_version,
+                       "note": ("export only; the live state is unchanged; v3-only data is archived under v3_archive"
+                                + (" and v2-only data under v2_archive" if args.target_version == 1 else ""))})
     if sub == "exam-start":
         return printj(k.start_exam(sid, args.node, fast_track=args.fast_track, **_kw(args)))
     if sub == "exam-submit":
@@ -1111,6 +1132,10 @@ def cmd_course(args):
         return printj(k.record_commitments(sid, _commitments(args) or {}, **_kw(args)))
     if sub == "accountability":
         return printj(k.respond_accountability(sid, args.blocker, args.note, **_kw(args)))
+    if sub == "promote-staged":
+        from runtime.studio import StudioKernel
+        return printj(StudioKernel(workspace(args)).promote(sid, getattr(args, "job", None),
+                                                           idempotency_key=getattr(args, "idempotency_key", None)))
     if sub == "regenerate-ui":
         return printj(k.regenerate_ui(sid))
     if sub == "build-ui":
@@ -1155,6 +1180,9 @@ def _add_course_parser(sp):
 
     sub("init", "create/migrate course state for a session")
     sub("turn", "agent turn: hydrate persisted state, reconcile, list permitted actions")
+    ps = sub("promote-staged", "promote an owner-accepted studio build into the live course (all conditions re-checked)",
+             mutating=True)
+    ps.add_argument("--job")
     sub("state", "read-only course state")
     sub("export", "versioned human-readable export").add_argument("--output")
     sub("target", "record a verified goal target (e.g. certification)", mutating=True).add_argument("--file", required=True)
@@ -1196,11 +1224,18 @@ def _add_course_parser(sp):
         p = sub(name, f"validate + install {name.split('-')[1]} for a node", mutating=True)
         p.add_argument("--node", required=True)
         p.add_argument("--file", required=True)
+    for name, staged_flag in (("validate-lesson", "--staged-items"), ("validate-items", "--staged-lesson")):
+        p = sub(name, f"dry-run the {name.split('-')[1]} validators (exit 0 valid, 1 with the error list); installs nothing")
+        p.add_argument("--node", required=True)
+        p.add_argument("--file", required=True)
+        p.add_argument(staged_flag, help="staged counterpart payload to check separation against")
     for name in ("start", "practice-begin", "practice-check"):
         sub(name, f"{name} on a node", mutating=True).add_argument("--node", required=True)
     h = sub("help", "teaching help (records support provenance)", mutating=True)
     h.add_argument("--node", required=True)
-    h.add_argument("--kind", required=True, choices=["explain", "why", "worked_example", "hint", "alternative"])
+    h.add_argument("--kind", required=True,
+                   choices=["explain", "why", "worked_example", "hint", "alternative", "walkthrough", "ladder"])
+    h.add_argument("--rung", choices=["worked", "completion"], help="ladder rung (default worked)")
     se = sub("self-explain", "learner self-explanation (coverage feedback only)", mutating=True)
     se.add_argument("--node", required=True)
     se.add_argument("--file", required=True)
@@ -1208,6 +1243,12 @@ def _add_course_parser(sp):
     es.add_argument("--node", required=True)
     es.add_argument("--fast-track", action="store_true")
     sub("exam-submit", "submit + score + finalize (each step durable/resumable)", mutating=True).add_argument("--attempt", required=True)
+    pv = sub("practice-reveal", "reveal the reference solution (no credit for this attempt; needs --confirm)",
+             mutating=True)
+    pv.add_argument("--node", required=True)
+    pv.add_argument("--confirm", action="store_true", help="explicit confirmation that this attempt earns no credit")
+    sub("practice-reset", "archive the current submission and restore the starter file", mutating=True).add_argument(
+        "--node", required=True)
     pa = sub("practice-answer", "grade concept/scenario practice answers (JSON {question_id: answer})", mutating=True)
     pa.add_argument("--node", required=True)
     pa.add_argument("--file", required=True)
@@ -1226,8 +1267,9 @@ def _add_course_parser(sp):
     fr.add_argument("--item", required=True)
     fr.add_argument("--decision", required=True, choices=["distinct", "duplicate"])
     fr.add_argument("--rationale")
-    sub("schema-down", "export the course state as schema v1 (v2 data archived; live state unchanged)").add_argument(
-        "--output", required=True)
+    sd = sub("schema-down", "export the course state as schema v1 (or v2; newer data archived; live state unchanged)")
+    sd.add_argument("--output", required=True)
+    sd.add_argument("--target-version", type=int, choices=(1, 2), default=1)
     ab = sub("exam-abandon", "explicitly abandon (never counted as success)", mutating=True)
     ab.add_argument("--attempt", required=True)
     ab.add_argument("--reason")
@@ -1245,6 +1287,213 @@ def _add_course_parser(sp):
     srv.add_argument("--allow-anon", action="store_true", help="loopback-only; Host/Origin checks still apply")
     srv.add_argument("--intake", action="store_true", help="explicit optional intake/roadmap preview; never a generated course before approval")
     srv.set_defaults(no_outer_lock=True)
+
+
+def cmd_rules_check(args):
+    """Recompute the 10-rule gate from scratch. Exit 0 pass, 2 a rule failed, 3 probe error or broken suite."""
+    from runtime import rules_check as rc
+    receipt = rc.run_rules(workspace(args), args.session, args.job, args.scope)
+    path = None
+    if receipt["job_id"] and (args.scope == "full" or args.persist):
+        path = rc.commit_receipt(workspace(args), args.session, receipt)["path"]
+    printj(rc.summary(receipt, path=path))
+    if receipt["exit_code"]:
+        raise SystemExit(receipt["exit_code"])
+
+
+# --- studio: background course production (stage A: jobs, orders, staging) -----
+STUDIO_COMMANDS = ("init", "plan", "status", "next-task", "order-show", "submit", "check", "events",
+                   "pause", "resume", "cancel", "rebase", "handover", "accept", "reject", "promote",
+                   "start", "worker", "tick", "schedule-print", "doctor", "notifications", "serve")
+# the background worker holds no session lock between kernel calls (a runner executes for minutes); the owner server is long-lived
+STUDIO_UNLOCKED = frozenset({"start", "worker", "tick", "serve"})
+
+
+def _cmd_studio_serve(args):
+    """Owner HTTP surface (stage E): a separate process and credential from `course serve`. The token comes from the
+    environment only (never an argument, a URL or a log line)."""
+    token = os.environ.get("ALEARN_OWNER_TOKEN")
+    if not token:
+        raise SystemExit("studio serve needs ALEARN_OWNER_TOKEN in the environment (>= 24 random characters, different from "
+                         "ADAPTIVE_API_TOKEN), e.g. `export ALEARN_OWNER_TOKEN=$(openssl rand -base64 36)`")
+    kernel(args).dir(args.session)        # fail fast on an unknown session
+    dist = SKILL_DIR / "templates" / "react" / "dist"
+    if not (dist / "index.html").is_file():
+        raise SystemExit(f"no built owner UI at {dist}")
+    try:
+        cfg = ServerConfig(host=args.host, port=args.port, owner_session=args.session, owner_token=token,
+                           workspace=workspace(args), ui_dir=dist)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print(f"Sahib paneli: http://{args.host}:{args.port}/  (session {args.session}; token: ALEARN_OWNER_TOKEN)")
+    return run_server(cfg)
+
+
+def cmd_studio(args):
+    from runtime.studio import StudioKernel
+    if args.studio_cmd == "serve":
+        return _cmd_studio_serve(args)
+    k = StudioKernel(workspace(args))
+    sid, job, sub = args.session, getattr(args, "job", None), args.studio_cmd
+    key = getattr(args, "idempotency_key", None)
+    if sub == "init":
+        policy = {}
+        if args.allow_private_sources:
+            policy["allow_private_sources"] = True
+        if args.max_attempts is not None:
+            policy["budgets"] = {"max_attempts_per_unit": args.max_attempts}
+        return printj(k.init(sid, policy=policy or None))
+    if sub == "plan":
+        return printj(k.plan(sid, job, idempotency_key=key))
+    if sub == "status":
+        return printj(k.status(sid, job))
+    if sub == "next-task":
+        return printj(k.next_task(sid, job))
+    if sub == "order-show":
+        return printj(k.order_show(sid, job, args.order))
+    if sub == "submit":
+        payload = safe_input_path(workspace(args), args.file).read_text(encoding="utf-8") if args.file else None
+        return printj(k.submit(sid, job, args.order, payload, idempotency_key=key))
+    if sub == "check":
+        return printj(k.check(sid, job))
+    if sub == "events":
+        return printj(k.events(sid, job))
+    if sub in ("pause", "resume", "cancel", "rebase"):
+        return printj(getattr(k, sub)(sid, job, idempotency_key=key))
+    if sub == "handover":
+        return printj(k.handover(sid, job, idempotency_key=key))
+    if sub == "accept":
+        return printj(k.accept(sid, job, args.digest, args.statement, idempotency_key=key,
+                               interactive=sys.stdin.isatty() and sys.stdout.isatty()))
+    if sub == "reject":
+        return printj(k.reject(sid, job, args.node, args.note, idempotency_key=key))
+    if sub == "promote":
+        return printj(k.promote(sid, job, idempotency_key=key))
+    if sub == "runners":
+        return _cmd_studio_runners(k, args)
+    return _cmd_studio_worker(k, args, sid, job, sub)
+
+
+def _cmd_studio_runners(k, args):
+    sid, sub = args.session, args.runners_cmd
+    if sub == "configure":
+        return printj(k.runners_configure(sid, args.runner, confirm=args.confirm, statement=args.statement,
+                                          binary=args.binary, timeout=args.timeout, pass_env=args.pass_env or (),
+                                          model=args.model, max_budget_usd=args.max_budget_usd))
+    if sub == "show":
+        return printj(k.runners_show(sid))
+    if sub == "disable":
+        return printj(k.runners_disable(sid, args.runner))
+    raise SystemExit(f"unknown studio runners command {sub}")
+
+
+def _cmd_studio_worker(k, args, sid, job, sub):
+    """Stage D: background worker (start/worker/tick), schedule-print, doctor, notifications."""
+    from runtime import studio_worker as sw
+    from runtime.studio_store import StudioError, studio_dir
+    root = studio_dir(k.ck.sk.dir(sid))
+    if sub == "schedule-print":
+        sys.stdout.write(sw.schedule_print(workspace(args), sid, Path(__file__).resolve(), args.every_minutes,
+                                           sw.worker_dir(root) / sw.LOG_FILE))
+        return None
+    if sub == "doctor":
+        report = sw.doctor(k, sid)
+        printj(report)
+        if not report["ok"]:
+            raise SystemExit(2)
+        return None
+    if sub == "notifications":
+        return printj(sw.notifications(root, args.since))
+    if k.status(sid, job).get("status") == "no_job":
+        raise StudioError("studio_no_job", "no studio job exists for this session; run `alearn studio init`")
+    timing = {"poll": getattr(args, "poll_seconds", None), "max_poll": getattr(args, "max_poll_seconds", None),
+              "idle_limit": getattr(args, "idle_limit_seconds", None)}
+    if sub == "start" and args.detach:
+        return printj(sw.start_detached(workspace(args), sid, Path(__file__).resolve(), k=k, job_id=job, runner=args.runner,
+                                        poll=args.poll_seconds, max_poll=args.max_poll_seconds,
+                                        idle_limit=args.idle_limit_seconds))
+    chatter = (lambda line: print(line, file=sys.stderr, flush=True)) if sub == "worker" else None
+    worker = sw.Worker(workspace(args), sid, job_id=job, kernel=k, runner=args.runner, log=chatter,
+                       **{key: value for key, value in timing.items() if value is not None})
+    return printj(worker.run_once() if sub == "tick" else worker.run_loop())
+
+
+def _add_studio_parser(sp):
+    c = sp.add_parser("studio", help="Course Studio: background course production jobs (inline author loop)")
+    cs = c.add_subparsers(dest="studio_cmd", required=True)
+    helps = {"init": "create the build job for a course session (needs_learner when prerequisites are missing)",
+             "plan": "plan units from the proposed roadmap", "status": "job status, drift check, progress",
+             "next-task": "the next work order for the host agent (or idle/needs_learner/done/blocked)",
+             "order-show": "show one immutable work order", "submit": "submit an authored payload for an order",
+             "check": "read-only completeness + per-unit validation", "events": "hash-chained studio events + verification",
+             "pause": "pause the job", "resume": "resume a paused job", "cancel": "cancel the job",
+             "rebase": "new job against the current course, reusing unchanged re-validated units",
+             "handover": "the owner's dossier for the current build (recomputes a missing/stale full receipt)",
+             "accept": "owner acceptance bound to the exact build digest (refused when the receipt is stale or failing)",
+             "reject": "re-open one node's units with the owner's note as a fix order",
+             "promote": "promote an accepted build into the live course (all conditions re-checked)",
+             "start": "run the background worker (foreground loop; --detach spawns it and returns)",
+             "worker": argparse.SUPPRESS,
+             "tick": "one worker iteration (for cron/launchd); skipped while a worker loop holds the lock",
+             "schedule-print": "PRINT a launchd plist and a crontab line that run `studio tick` (installs nothing)",
+             "doctor": "runners (binary/version/sha drift), worker, permissions, event chain, ledger, sandbox, notifications",
+             "notifications": "pull notifications (handover ready, blocked, needs owner, worker finished)",
+             "serve": "owner HTTP surface + UI (needs ALEARN_OWNER_TOKEN; loopback by default; separate from `course serve`)"}
+    for name in STUDIO_COMMANDS:
+        p = cs.add_parser(name, help=helps[name])
+        p.add_argument("--session", required=True)
+        if name != "init":
+            p.add_argument("--job")
+        if name in ("order-show", "submit"):
+            p.add_argument("--order", required=True)
+        if name == "submit":
+            p.add_argument("--file", help="payload JSON inside the workspace; omit to read the order's out/result.json")
+        if name in ("plan", "submit", "pause", "resume", "cancel", "rebase", "handover", "accept", "reject", "promote"):
+            p.add_argument("--idempotency-key")
+        if name == "accept":
+            p.add_argument("--digest", required=True, help="the exact build digest being accepted")
+            p.add_argument("--statement", required=True, help="the owner's acceptance statement (kept in the ledger)")
+        if name == "reject":
+            p.add_argument("--node", required=True)
+            p.add_argument("--note", required=True, help="the owner's note: becomes the author's fix order")
+        if name == "init":
+            p.add_argument("--allow-private-sources", action="store_true",
+                           help="let orders include private (file/upload) sources; recorded in the job policy")
+            p.add_argument("--max-attempts", type=int)
+        if name in ("start", "worker", "tick"):
+            p.add_argument("--runner", choices=["claude", "codex"], help="use this configured runner (default: the first enabled)")
+        if name in ("start", "worker"):
+            p.add_argument("--poll-seconds", type=float, help="first idle sleep (default 30, doubling)")
+            p.add_argument("--max-poll-seconds", type=float, help="longest idle sleep (default 300)")
+            p.add_argument("--idle-limit-seconds", type=float, help="exit after this long without work (default 7200)")
+        if name == "start":
+            p.add_argument("--detach", action="store_true", help="spawn the worker in its own session and return")
+        if name == "serve":
+            p.add_argument("--host", default="127.0.0.1")
+            p.add_argument("--port", type=int, default=8778)
+        if name == "schedule-print":
+            p.add_argument("--every-minutes", type=int, default=15)
+        if name == "notifications":
+            p.add_argument("--since", type=int, default=0, help="only notifications numbered >= N")
+        p.set_defaults(func=cmd_studio, no_outer_lock=name in STUDIO_UNLOCKED)
+    rn = cs.add_parser("runners", help="opt-in headless runners (claude -p / codex exec) for background authoring")
+    rs = rn.add_subparsers(dest="runners_cmd", required=True)
+    for rname, rhelp in (("configure", "enable a runner after confirming what leaves the machine"),
+                         ("show", "configured runners, binary drift, what is sent"), ("disable", "disable a runner")):
+        rp = rs.add_parser(rname, help=rhelp)
+        rp.add_argument("--session", required=True)
+        if rname != "show":
+            rp.add_argument("--runner", required=True, choices=["claude", "codex"])
+        if rname == "configure":
+            rp.add_argument("--confirm", action="store_true", help="acknowledge that the order and public source text go to the vendor's model")
+            rp.add_argument("--statement", help="the owner's statement (kept in runners.json and the event log)")
+            rp.add_argument("--binary", help="absolute path of the CLI (default: the one on PATH, resolved)")
+            rp.add_argument("--timeout", type=int, help="seconds per order (60..policy max - 30; default 600)")
+            rp.add_argument("--pass-env", action="append", metavar="NAME", help="environment variable NAME to pass (allowlist per runner)")
+            rp.add_argument("--model")
+            rp.add_argument("--max-budget-usd", type=float, help="claude only: spend cap per run")
+        rp.set_defaults(func=cmd_studio, studio_cmd="runners")
+
 
 
 def _add_contract_args(s):
@@ -1785,6 +2034,13 @@ def parser():
     ins.set_defaults(func=cmd_inspect)
 
     _add_course_parser(sp)
+    _add_studio_parser(sp)
+    rcp = sp.add_parser("rules-check", help="recompute the 10-rule gate (exit 0 pass, 2 rule failed, 3 probe error/broken suite)")
+    rcp.add_argument("--session", required=True)
+    rcp.add_argument("--job")
+    rcp.add_argument("--scope", choices=["quick", "full"], default="quick")
+    rcp.add_argument("--persist", action="store_true", help="store the receipt (full scope with a job always does)")
+    rcp.set_defaults(func=cmd_rules_check)
     return p
 
 

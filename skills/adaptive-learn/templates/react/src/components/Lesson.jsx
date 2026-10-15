@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ActionBar, Refs, RoleNote, Steps, Text, resourceStatus } from './ui.jsx';
+import Walkthrough from './Walkthrough.jsx';
+import Ladder from './Ladder.jsx';
 
 // Teaching view. Content arrives only through recorded help actions, so every
 // explanation or worked example the learner sees is part of the support provenance.
@@ -22,12 +24,17 @@ export default function Lesson({ view, nodeId, info, act, go, confirmExam, busy 
   const [cards, setCards] = useState([]);
   const [text, setText] = useState('');
   const [coverage, setCoverage] = useState(null);
+  const [wt, setWt] = useState(null);
   if (!info) return <p role="status">Dərs yüklənir…</p>;
   const sp = view.support_provenance;
   const ready = info.lesson?.status === 'ready';
   const help = async kind => {
     const out = await act('/api/course/help', { node: nodeId, kind });
     if (out) setCards(prev => [...prev.filter(c => c.kind !== kind), out]);
+  };
+  const watch = async () => {
+    const out = await act('/api/course/help', { node: nodeId, kind: 'walkthrough' });
+    if (out) setWt(out.content);
   };
   const begin = async () => { if (await act('/api/course/practice/begin', { node: nodeId })) go(`#/practice/${nodeId}`); };
   const nextHelp = !sp.explanation_shown ? 'explain' : !sp.worked_example_shown ? 'worked_example' : 'alternative';
@@ -71,6 +78,12 @@ export default function Lesson({ view, nodeId, info, act, go, confirmExam, busy 
         <p className="muted">Birbaşa yoxlama görmədiyin yeni tapşırıqdır; keçməsən, izahdan davam edəcəyik.</p>
       </div>}
     {cards.map(item => <HelpCard key={item.kind} item={item} />)}
+    {info.practice_first?.walkthrough && <section className="card" aria-labelledby="wt-entry">
+      <h2 id="wt-entry">Əvvəl izlə</h2>
+      <p>Eyni bacarığı başqa nümunədə addım-addım göstərən nümayiş. Praktika və imtahan tapşırıqları bundan fərqlidir, izləmək sübut sayılmır.</p>
+      <button type="button" disabled={busy} onClick={watch}>{wt ? 'Nümayişi yenilə' : 'Nümayişi izlə'}</button></section>}
+    {wt && <Walkthrough content={wt} />}
+    {info.practice_first?.ladder && <Ladder nodeId={nodeId} act={act} busy={busy} onIndependent={begin} />}
     {(sp.explanation_shown || sp.worked_example_shown) &&
       <form className="card self" onSubmit={sendSelf}>
         <h2><label htmlFor="self-text">Öz sözlərinlə izah et</label></h2>

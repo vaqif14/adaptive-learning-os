@@ -65,6 +65,20 @@ def _chmod(path: Path, mode: int) -> None:
         pass  # best-effort on filesystems without POSIX modes
 
 
+def private_dirs(directory: Path) -> None:
+    """Create ``directory`` and every missing parent with mode 0700 (``mkdir(parents=True, mode=...)`` applies the mode
+    to the leaf only, which left intermediate vault/course folders world-listable). Existing parents are not touched."""
+    directory = Path(directory)
+    missing, probe = [], directory
+    while not probe.exists():
+        missing.append(probe)
+        probe = probe.parent
+    for created in reversed(missing):
+        created.mkdir(exist_ok=True)
+        _chmod(created, _DIR_MODE)
+    _chmod(directory, _DIR_MODE)
+
+
 def write_json(path: Path, obj) -> None:
     """Atomically write JSON: temp file in the same dir + os.replace.
 
@@ -73,12 +87,32 @@ def write_json(path: Path, obj) -> None:
     separators are irrelevant here (unlike the line-delimited ledger).
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _chmod(path.parent, _DIR_MODE)
+    private_dirs(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps(obj, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        _chmod(path, _FILE_MODE)
+        fsync_directory(path.parent)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_bytes(path: Path, data: bytes) -> None:
+    """Atomically write raw bytes (temp file + fsync + os.replace), mode 0600."""
+    path = Path(path)
+    private_dirs(path.parent)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)

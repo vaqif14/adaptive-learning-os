@@ -7,6 +7,8 @@ permissions: {}
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # A hung test must not hold a runner for the 6h default (full suite is ~15 min per cell).
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -63,6 +65,9 @@ jobs:
       - name: Browser E2E — learner journey
         if: always()
         run: python tests/e2e/course_journey_e2e.py --out e2e-journey --node-modules "$RUNNER_TEMP/frontend-deps/node_modules"
+      - name: Browser E2E — Course Studio owner UI and learner practice-first UI
+        if: always()
+        run: python tests/e2e/studio_e2e.py --out e2e-studio --node-modules "$RUNNER_TEMP/frontend-deps/node_modules"
       - name: Upload assertion logs, screenshots and traces
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (resolved 2026-10-13)
@@ -76,4 +81,8 @@ jobs:
             e2e-journey/*.json
             e2e-journey/*.zip
             e2e-journey/screenshots/
+            e2e-studio/e2e-log.json
+            e2e-studio/vite-build.log
+            e2e-studio/trace.zip
+            e2e-studio/screenshots/
           retention-days: 14

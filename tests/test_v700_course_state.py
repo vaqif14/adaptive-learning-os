@@ -106,7 +106,7 @@ class StateMachineTests(unittest.TestCase):
         v0 = {"session_id": SID, "goal": "eski məqsəd", "phase": "onboarding", "created_at": "2026-01-01T00:00:00+00:00",
               "learning_commitments": [{"id": "cm_1", "kind": "weekly_active_minutes", "target": 60, "status": "active"}]}
         migrated, applied = cs.migrate(v0)
-        self.assertEqual(applied, [0, 1])          # v0 -> v1 -> v2
+        self.assertEqual(applied, [0, 1, 2])       # v0 -> v1 -> v2 -> v3
         self.assertEqual(migrated["schema_version"], cs.SCHEMA_VERSION)
         self.assertEqual(migrated["goal"]["text"], "eski məqsəd")
         self.assertEqual(migrated["learning_commitments"][0]["id"], "cm_1")   # IDs preserved

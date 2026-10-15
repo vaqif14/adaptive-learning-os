@@ -12,7 +12,7 @@ from .ledger import EventLedger
 from .local_state import recover_state, sync_tree, workspace_metadata
 from .safety import safe_session_dir, valid_session_id
 from .session_lock import session_lock
-from .utils import read_json, write_json, fsync_directory
+from .utils import read_json, write_json, fsync_directory, private_dirs
 
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FILES = 10000
@@ -21,28 +21,48 @@ REQUIRED = {"session.json", "learning-contract.json", "source-policy.json",
             "domain-context.json", "anchor-probe.json", "ledger.jsonl"}
 
 
-def backup_session(kernel, session_id, output):
+# Rules-check scratch copies (current and rotated) are disposable duplicates of the session itself.
+DEFAULT_EXCLUDE = ("studio/scratch", "studio/archive/scratch-runs")
+
+
+def backup_session(kernel, session_id, output, *, exclude=DEFAULT_EXCLUDE, symlinks="refuse"):
+    """Back up a session. ``exclude`` lists relative path prefixes left out of the archive (default: the rules-check
+    scratch copies, current under ``studio/scratch`` and rotated under ``studio/archive/scratch-runs``); the output may
+    live inside the session directory only under such an excluded prefix. ``symlinks`` is ``refuse`` (default: a symlink
+    is an error) or ``skip`` (the rules-check scratch copy: links are left out and listed in ``skipped_symlinks``)."""
+    if symlinks not in {"refuse", "skip"}:
+        raise ValueError("symlinks must be 'refuse' or 'skip'")
     directory = kernel.dir(session_id)
     output = Path(output).resolve()
-    if output == directory or directory in output.parents:
+    skipped = tuple(str(PurePosixPath(p)) for p in exclude)
+    inside = output == directory or directory in output.parents
+    if inside and not any(output == directory / p or (directory / p) in output.parents for p in skipped):
         raise ValueError("backup output must be outside the session directory")
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with session_lock(directory):
         kernel.ledger(session_id).require_integrity()
         kernel._recover_state(session_id)
         manifest = {"schema_version": 1, "session_id": session_id, "files": {}}
+        skipped_links = []
         fd, temporary = tempfile.mkstemp(prefix=".backup-", dir=output.parent)
         os.close(fd)
         try:
             total = 0
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for root, dirs, files in os.walk(directory, followlinks=False):
-                    dirs[:] = sorted(d for d in dirs if d not in SKIP)
+                    rel_root = Path(root).relative_to(directory).as_posix()
+                    rel_root = "" if rel_root == "." else rel_root
+                    dirs[:] = sorted(d for d in dirs if d not in SKIP
+                                     and (f"{rel_root}/{d}" if rel_root else d) not in skipped)
                     for name in dirs + files:
                         if name not in SKIP and (Path(root) / name).is_symlink():
-                            raise ValueError("backup refuses symlinks; preserve their targets separately")
+                            where = (Path(root) / name).relative_to(directory).as_posix()
+                            if symlinks == "refuse":
+                                raise ValueError(f"backup refuses symlinks; preserve their targets separately ({where})")
+                            skipped_links.append(where)
+                    dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
                     for name in sorted(files):
-                        if name in SKIP or name.startswith(".tmp-"):
+                        if name in SKIP or name.startswith(".tmp-") or (Path(root) / name).is_symlink():
                             continue
                         path = Path(root) / name
                         before = path.stat()
@@ -50,7 +70,8 @@ def backup_session(kernel, session_id, output):
                             raise ValueError("backup accepts regular files only")
                         total += before.st_size
                         if total > MAX_BYTES or len(manifest["files"]) >= MAX_FILES:
-                            raise ValueError("backup exceeds local archive limits")
+                            raise ValueError("backup exceeds local archive limits "
+                                             f"({len(manifest['files'])} files, {total} bytes at {path.relative_to(directory).as_posix()})")
                         with path.open("rb") as stream:
                             data = stream.read(MAX_BYTES + 1)
                         if len(data) != before.st_size or path.stat().st_mtime_ns != before.st_mtime_ns:
@@ -69,7 +90,7 @@ def backup_session(kernel, session_id, output):
         finally:
             os.unlink(temporary)
     return {"status": "verified_backup", "session_id": session_id, "output": str(output),
-            "files": len(manifest["files"]), "bytes": total}
+            "files": len(manifest["files"]), "bytes": total, **({"skipped_symlinks": skipped_links} if skipped_links else {})}
 
 
 def _read_archive(path):
@@ -123,7 +144,7 @@ def restore_session(kernel, backup_file):
         try:
             for name, data in files.items():
                 path = stage / name
-                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                private_dirs(path.parent)           # every intermediate directory 0700 (mkdir's mode covers the leaf only)
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(data)
